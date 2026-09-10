@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package bsos;
+
+option go_package = "bsos/internal/daemon/bsospb";
+
+// See docs/DESIGN.md §4 for the rationale behind this shape.
+// gRPC only — there is no HTTP surface for this service.
+
+message PutHeader {
+  uint64 fid = 1;         // client-computed xxh3_64(content); server trusts it, never verifies
+  uint64 total_size = 2;  // required; must arrive before any data chunk
+  uint64 alias_for = 3;   // optional, 0 = normal put. Non-zero: also register
+                           // alias_for -> fid as a one-hop jump pointer, in
+                           // the same write.
+}
+
+message PutRequest {
+  oneof msg {
+    PutHeader header = 1;  // must be the first message on the stream
+    bytes chunk = 2;       // subsequent messages, streamed straight to disk
+  }
+}
+
+message PutResponse {}
+
+message GetRequest {
+  uint64 fid = 1;
+  bool has_range = 2;
+  uint64 range_start = 3;
+  uint64 range_end = 4;
+}
+
+message GetResponse {
+  uint64 size = 1;
+  uint64 range_start = 2;
+  uint64 range_end = 3;
+  bytes data = 4;
+}
+
+service BSOS {
+  rpc Put(stream PutRequest) returns (PutResponse);
+  rpc Get(GetRequest) returns (stream GetResponse);
+}

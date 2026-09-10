@@ -1,8 +1,8 @@
 # Open questions
 
-Not yet resolved as of this document's creation. Resolve into
-`docs/DESIGN.md` as decisions land.
+None currently open. The gRPC-only transport and the Put/Get wire format
+(client-declared `fid`, streaming `PutHeader`/chunk split, `alias_for`
+folded into Put) are settled in `docs/DESIGN.md` §4.
 
-- Exact wire format for declaring `key` + `size` up front on write (HTTP
-  header shape; gRPC message field(s), presumably alongside/replacing
-  `PutRequest.total_size`).
+Add new entries here as they come up, and resolve them back into
+`docs/DESIGN.md` when decided.
