@@ -40,6 +40,9 @@ type Server struct {
 	stopCh       chan struct{}
 	closeOnce    sync.Once
 	trimInterval time.Duration
+
+	grpcMu     sync.Mutex
+	grpcServer *grpc.Server
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -130,6 +133,12 @@ func (s *Server) Close() error {
 		if s.stopCh != nil {
 			close(s.stopCh)
 		}
+		s.grpcMu.Lock()
+		gs := s.grpcServer
+		s.grpcMu.Unlock()
+		if gs != nil {
+			gs.GracefulStop()
+		}
 	})
 	var firstErr error
 	for _, disk := range s.disks {
@@ -147,6 +156,9 @@ func (s *Server) Serve(listenAddr string) error {
 	}
 	grpcServer := grpc.NewServer()
 	bsospb.RegisterBSOSServer(grpcServer, s)
+	s.grpcMu.Lock()
+	s.grpcServer = grpcServer
+	s.grpcMu.Unlock()
 	log.Printf("bsosd: listening on %s (%d disk(s))", listenAddr, len(s.disks))
 	return grpcServer.Serve(lis)
 }
@@ -312,10 +324,33 @@ func (s *Server) Health(_ context.Context, _ *bsospb.Empty) (*bsospb.HealthRespo
 	healthy := len(s.disks) > 0 && !s.degraded
 	for _, d := range s.disks {
 		d.indexMu.RLock()
-		healthy = healthy && d.indexErr == nil
+		indexFault := d.indexErr != nil
 		d.indexMu.RUnlock()
+		if indexFault || !s.canWrite(d, 1) {
+			healthy = false
+			break
+		}
 	}
 	return &bsospb.HealthResponse{Ok: healthy}, nil
+}
+
+// DiskCount returns the number of disks registered in this pool.
+func (s *Server) DiskCount() int {
+	return len(s.disks)
+}
+
+// DiskIDs returns the diskIDs of all disks in the pool.
+func (s *Server) DiskIDs() []uint64 {
+	ids := make([]uint64, len(s.disks))
+	for i, d := range s.disks {
+		ids[i] = d.diskID
+	}
+	return ids
+}
+
+// Degraded reports whether the server is operating in degraded mode.
+func (s *Server) Degraded() bool {
+	return s.degraded
 }
 
 func (s *Server) startTrimScheduler(interval time.Duration) {

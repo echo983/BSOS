@@ -141,9 +141,12 @@ plan avoids debugging both at once.
    pool-wide two-FID atomic gate reservation, same-disk co-locality guarantees,
    adjacent index pair publication, logical content un-padding on read/range-read,
    strict prohibition of chained aliases or overwriting existing objects,
-   Trim candidate exclusion, crash/restart replay, and client jump-retry simulation.
-7. **Health and operational polish.** Timeouts, config surface,
-   diagnostics.
+7. **Health and operational polish — done.**
+   TOML configuration file support (`bsosd.toml`, `ParseSize`, parameter validation),
+   CLI explicit flag overrides, Health RPC disk writeability & fault checking,
+   pool diagnostic helpers, and graceful shutdown on SIGINT/SIGTERM with in-flight drain.
+   Verified with unit tests, `-race`, and dedicated VPS systemd deployment.
+   See `MILESTONE_7_VALIDATION_2026-09-10.md`.
 8. **Go client library.** Implements `docs/CLIENT_SPEC.md` in full
    (§4 below): fid computation, streaming Put/Get/Head/Bonnie/Health,
    jump-retry helper, readback-based retry-safety helper.

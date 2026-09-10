@@ -8,14 +8,15 @@ untrusted participants.
 
 ## Status
 
-Design is complete at `design-v0`. Implementation milestones 1–6 are
-complete; milestone 7 (Health and operational polish) is next.
+Design is complete at `design-v0`. Implementation milestones 1–7 are
+complete; milestone 8 (Go client library) is next.
 Continuous mandatory Trim defragmentation, container packing, crash-safety
-failpoints, Bonnie RPC, and full one-hop jump alias protocol have passed
-all unit and race tests.
-Routing/recovery tests, real two-disk verification, and real zram host
-acceptance gate on Debian 13 VPS have passed. See [milestone 4 validation](docs/MILESTONE_4_VALIDATION_2026-09-10.md)
-and [milestone 5 validation](docs/MILESTONE_5_VALIDATION_2026-09-10.md).
+failpoints, Bonnie RPC, one-hop jump alias protocol, and operational polish (TOML config,
+Health & diagnostics, and graceful shutdown) have passed all unit and race tests.
+Routing/recovery tests, real two-disk verification, real zram host
+acceptance gate, and systemd daemon deployment on Debian 13 VPS have passed. See [milestone 4 validation](docs/MILESTONE_4_VALIDATION_2026-09-10.md),
+[milestone 5 validation](docs/MILESTONE_5_VALIDATION_2026-09-10.md), [milestone 6 validation](docs/MILESTONE_6_VALIDATION_2026-09-10.md),
+and [milestone 7 validation](docs/MILESTONE_7_VALIDATION_2026-09-10.md).
 The tree also includes the foundation repairs described in
 [the foundation validation report](docs/FOUNDATION_VALIDATION_2026-09-10.md).
 See `docs/IMPLEMENTATION_PLAN.md` for milestone scope and remaining work,

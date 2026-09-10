@@ -4,3 +4,4 @@
 *.test
 /nbss_index_backup/
 /config/test-host.local.md
+/bin/

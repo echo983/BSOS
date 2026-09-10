@@ -38,6 +38,22 @@ fi
 cat > /etc/modules-load.d/bsos-test.conf <<'CONFIG'
 zram
 CONFIG
+cat > "$state_dir/bsosd.toml" <<'TOML'
+pan_path = "/var/lib/bsos-test/pan.json"
+grpc_listen = "127.0.0.1:19090"
+max_put = "256MB"
+small_file_pow2 = 6
+zram_snapshot_dir = "/var/lib/bsos-test/snapshots"
+reservation_stall_timeout_ms = 30000
+pool_gate_fanout_timeout_ms = 2000
+write_dispatch_concurrency = 64
+chd_target_p = 0.2
+trim_interval_seconds = 900
+trim_min_file_count = 100
+trim_threshold_ratio = 0.2
+trim_min_threshold_bytes = "1MB"
+trim_max_threshold_bytes = "16MB"
+TOML
 cat > /etc/systemd/system/bsos-test.service <<'UNIT'
 [Unit]
 Description=BSOS integration test daemon
@@ -46,7 +62,7 @@ After=systemd-modules-load.service
 [Service]
 Type=simple
 WorkingDirectory=/var/lib/bsos-test
-ExecStart=/usr/local/lib/bsos-test/bsosd -pan /var/lib/bsos-test/pan.json -grpc-listen 127.0.0.1:19090 -zram-snapshot-dir /var/lib/bsos-test/snapshots
+ExecStart=/usr/local/lib/bsos-test/bsosd -config /var/lib/bsos-test/bsosd.toml
 Restart=on-failure
 RestartSec=2
 

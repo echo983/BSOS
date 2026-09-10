@@ -1,0 +1,24 @@
+# bsosd.example.toml - configuration file template for BSOS daemon
+
+pan_path = "pan.json"
+grpc_listen = ":9090"
+max_put = "256MB"
+small_file_pow2 = 6
+
+zram_snapshot_dir = "~/.bsos_zram_snapshots"
+
+# Concurrency and timeout controls (docs/DESIGN.md §3.3, §3.12)
+reservation_stall_timeout_ms = 30000    # per-write stall timeout
+pool_gate_fanout_timeout_ms = 2000      # pool-wide gate fan-out timeout
+write_dispatch_concurrency = 64         # per-disk bounded-concurrency cap
+
+# CH_d target success probability (docs/DESIGN.md §4)
+chd_target_p = 0.2
+
+# Background Trim defragmentation (docs/DESIGN.md §3.8 - mandatory)
+trim_interval_seconds = 900
+trim_min_file_count = 100
+trim_threshold_ratio = 0.2
+trim_min_threshold_bytes = "1MB"
+trim_max_threshold_bytes = "16MB"
+trim_temp_dir = ""
