@@ -192,6 +192,35 @@ physical location is no longer a pure function of fid + size — only the
 index (rewritten to point at the packed table) knows where it currently
 lives. GET always consults the index, unconditionally.
 
+### 3.11 Multi-disk pooling carries over from NBSS unchanged
+
+BSOS is a multi-disk pool, exactly like NBSS's `pan.json`. NBSS's own
+object-identity and disk-placement decisions were already independent of
+each other — `fid = hash(content)` never determined which disk an object
+landed on; disk selection is a separate, server-owned best-fit decision
+over each disk's CH_d (`internal/daemon/multidisk.go`:
+`selectDiskForWrite`/`pickZram`/`pickNonZram`, preferring zram for small
+files, otherwise the smallest CH_d disk that confidently fits, falling
+back to the roomiest disk when none confidently do). Moving fid
+computation to the client (§3.2) doesn't touch this axis at all, so it
+carries over as-is:
+
+- **Write**: server still picks the target disk using NBSS's existing
+  best-fit-by-CH_d policy. This only needs `size`, which is already known
+  from `PutHeader` before any data arrives, so it composes cleanly with
+  the streaming write path (§3.3).
+- **Read / existence-check**: server still broadcasts to all disks in
+  parallel and takes the first successful answer (NBSS's `readAny`/
+  `findExistingSize`), rather than maintaining a separate fid→disk
+  directory — unchanged, since this was never a function of who computes
+  fid either.
+- **Alias registration**: `alias_for` (§3.4) and its target fid must land
+  as an adjacent index-entry pair on the *same* disk (the jump-indicator/
+  real-entry pairing is scanned per-disk at boot replay), so disk
+  selection for a write with `alias_for` set picks one disk for the whole
+  operation, matching how NBSS's own `tryJumpWrite` already retries
+  within a single already-selected disk.
+
 ## 4. Transport and wire format
 
 **gRPC only.** BSOS does not expose an HTTP API. A client that needs HTTP
@@ -202,7 +231,43 @@ HTTP and gRPC handlers for every operation) and maps naturally onto
 gRPC's native bidirectional/client streaming, which the write path (§3.3)
 depends on.
 
-Draft proto shape for the two core RPCs:
+**RPC surface: `Put`, `Get`, `Head`, `Bonnie`.** Settled by elimination
+from NBSS's HTTP+gRPC surface:
+
+- **`Delete`**: dropped, per §3.7 (no DELETE/GC).
+- **`Probe`**: dropped entirely, including the narrower "batch existence
+  check" use case that survived the first cut. Reasoning: NBSS's PROBE
+  existed to avoid paying for a full payload upload just to learn about a
+  collision; BSOS's `PutHeader`-first write path already fails at the
+  header, before any payload moves, so PUT itself is already nearly as
+  cheap as a pure check. A dedicated batch-check RPC doesn't clear the bar
+  on top of that: per-item `Head` already covers "check without writing,"
+  and gRPC/HTTP2 already multiplexes many concurrent per-item calls over
+  one connection cheaply, so there's no real round-trip cost left for a
+  bespoke batch message format to save.
+- **`Pan`**: dropped. Disk topology, per-disk CH_d, and placement policy
+  are server-internal plumbing (§3.11); external clients have no reason
+  to see them and get everything they need through `Bonnie`'s single
+  aggregated number.
+- **`Head`**: kept. Cheap existence/size check without paying for a
+  payload transfer — useful standalone, and as the tool a client can use
+  for the readback check in §3.9.
+- **`Bonnie`**: kept, but reshaped. `write_backpressure_hint` is dropped
+  — it reported pressure on NBSS's `write_memory_budget_bytes`
+  subsystem, which BSOS doesn't have (§3.3). `ch_d_pow2` is *kept*: it's
+  a pure function of current occupancy (`internal/daemon/state.go:
+  computeCHD` samples 64 candidate fids and binary-searches for the
+  largest extent size placeable with the configured target probability),
+  independent of who computes fid or how payload buffering works. Its
+  role is repurposed as the signal a client uses to size chunks when
+  splitting a large object (§3.5): `ch_d_pow2` is the client's best
+  available estimate of "how big a single fid can I expect to place
+  successfully right now," and it visibly degrades if Trim (§3.8) isn't
+  keeping up. Multi-disk aggregation reuses NBSS's existing
+  `bonnieCHDPow2()` policy unchanged: max CH_d across writable non-zram
+  disks, capped by `max_put_bytes`.
+
+Draft proto shape:
 
 ```protobuf
 message PutHeader {
@@ -235,6 +300,19 @@ message GetResponse {
   uint64 range_start = 2;
   uint64 range_end   = 3;
   bytes  data        = 4;
+}
+
+message HeadRequest {
+  uint64 fid = 1;
+}
+
+message HeadResponse {
+  uint64 size = 1;
+}
+
+message BonnieResponse {
+  uint32 ch_d_pow2 = 1;  // largest object size placeable with the
+                          // configured target probability, right now
 }
 ```
 

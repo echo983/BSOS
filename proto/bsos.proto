@@ -38,7 +38,24 @@ message GetResponse {
   bytes data = 4;
 }
 
+message HeadRequest {
+  uint64 fid = 1;
+}
+
+message HeadResponse {
+  uint64 size = 1;
+}
+
+message Empty {}
+
+message BonnieResponse {
+  uint32 ch_d_pow2 = 1;  // largest object size placeable with the
+                          // configured target probability, right now
+}
+
 service BSOS {
   rpc Put(stream PutRequest) returns (PutResponse);
   rpc Get(GetRequest) returns (stream GetResponse);
+  rpc Head(HeadRequest) returns (HeadResponse);
+  rpc Bonnie(Empty) returns (BonnieResponse);
 }
