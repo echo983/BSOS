@@ -296,6 +296,45 @@ NBSS's tombstone entry type and everything that produces or interprets it
 (the DELETE routes, the `IsTombstone` branch in index replay) has no
 reason to exist in BSOS and is dropped.
 
+**Capacity planning for the in-memory index: one-time arithmetic at
+provisioning time, not ongoing monitoring.** Streaming writes (§3.3)
+remove the write-buffering memory problem NBSS had, but they don't touch
+a separate, independent RAM consumer inherited unchanged from NBSS: the
+full index is loaded into memory at boot and stays resident
+(`loadIndexIntoDB`, NutsDB in RAM). Because BSOS never deletes, a pool's
+index only grows over its life (Trim reduces entry *count* by packing,
+§3.8, but doesn't reduce the underlying object count) — this needs to be
+accounted for, but not the way write-buffering did.
+
+The difference is that this consumer has a *deterministic ceiling*, not
+an open-ended one, because the on-disk index region is a fixed size per
+disk regardless of disk capacity (`IndexBytes = GridStart - HeaderBytes`,
+unchanged from NBSS's format, §5) — so the maximum number of entries any
+one disk can ever hold is fixed too:
+
+```
+MaxEntriesPerDisk = IndexBytes / IndexEntrySize
+                   = 268,431,360 / 16
+                   = 16,776,960
+MaxIndexRAM(pool)  = NumDisks × MaxEntriesPerDisk × PerEntryOverheadBytes
+```
+
+`PerEntryOverheadBytes` is NutsDB's in-memory BTree overhead per key —
+not a constant this document can state, it should be measured (e.g. a
+load test that fills a disk's index to the cap and profiles RSS) rather
+than assumed.
+
+As long as a pool's machine is provisioned with RAM comfortably above
+`MaxIndexRAM(pool)`, index growth cannot OOM the process, ever, by
+construction: each disk's own hard limit (`ErrIndexFull`, rejecting
+further writes to that disk once its fixed index region is full) is
+always hit first, converting what could be a crash into a graceful,
+per-disk write rejection. This is arithmetic done once when a pool is
+provisioned (disk count, machine RAM) — unlike CH_d (§4), which needs
+watching at runtime because data-grid fullness genuinely changes over
+time, index-count capacity is a static ceiling fixed the moment the pool
+is created, not a live signal to monitor.
+
 ### 3.8 Trim stays mandatory, and its internals are unchanged
 
 Because Trim/Compact/Pack is now the *only* path both to reclaim data-grid
