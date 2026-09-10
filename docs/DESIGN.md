@@ -120,23 +120,36 @@ behind whichever stream happens to be in flight — an unacceptable
 throughput regression, not a minor inefficiency.
 
 The fix is a two-phase commit inside the write path, not a lock-scope
-tweak:
+tweak. It has to reserve at **two levels**, not one — see the fid-level
+gap called out below the steps, found on a later consistency pass:
 
 1. On receiving `PutHeader`, take the per-disk lock just long enough to
-   check the target extent against both confirmed occupancy *and* other
-   in-flight reservations, then insert a new **pending** reservation for
-   it, then release the lock. This is the only place a conflict (§3.4)
-   can be detected, and it must happen before any bytes are accepted.
+   check *and reserve, atomically*:
+   - the target data-grid extent, against confirmed occupancy and other
+     in-flight extent reservations (`intervals`);
+   - the fid-level registration for `fid` itself, against confirmed
+     entries (data or jump bucket) and other in-flight fid-level
+     reservations;
+   - if `alias_for` is set, the fid-level registration for `alias_for`
+     too, under the same two checks.
+
+   If any of these checks fails, release whatever was already reserved
+   in this step and return conflict — nothing is held. Otherwise all of
+   them are marked pending and the lock is released. This is the only
+   place a conflict (§3.4) can be detected, and it must happen before any
+   bytes are accepted.
 2. Stream chunks into the reserved extent without holding the lock,
    accumulating them into slot-aligned pieces before each `WriteAt` (see
    below).
 3. On a clean finish with a byte count matching `total_size`, take the
    lock again just long enough to write the index entry (and the
-   `alias_for` pair, if set) and flip the reservation to confirmed.
+   `alias_for` pair, if set) and flip every reservation from step 1 to
+   confirmed.
 4. On any abort (byte-count mismatch, stream error, client
-   cancellation, timeout waiting for the first byte after the header),
-   release the reservation without ever writing an index entry — the
-   slot is free again, exactly as if the attempt never happened.
+   cancellation, a reservation stall timeout — see below), release every
+   reservation from step 1 without ever writing an index entry — the fid
+   and the extent are free again, exactly as if the attempt never
+   happened.
 
 This pending-reservation state does not exist in NBSS today; its
 occupancy tracking (`intervals`) only ever represents confirmed writes,
@@ -144,6 +157,34 @@ because nothing there is ever mid-flight. Both `computeCHD` (Bonnie's
 source, §4) and ordinary conflict detection must read pending
 reservations too, or they'll double-book space that's already spoken for
 by an in-progress stream.
+
+**Why fid-level reservation is a second, separate thing from extent
+reservation, not covered by it.** A jump-indicator entry (what
+`alias_for` produces) never touches the data grid at all — NBSS's own
+format reserves no slot for a jump indicator's origin fid, only for the
+real entry it points to. So a plain write to fid A racing against a
+concurrent `alias_for: A` write (aliasing A to some other fid) is a
+conflict that pure extent-level reservation cannot see: neither
+operation's data-grid extent overlaps the other's, because the alias
+operation doesn't claim an extent for A in the first place. Without a
+separate fid-level reservation, both could proceed, and whichever
+commits its index entry last silently wins per the log's "last entry for
+a fid wins" replay rule — the other write's data would still be sitting
+on disk but become permanently unreachable through that fid, with no
+error raised to either caller. This can't happen in NBSS today only
+because NBSS holds its lock for an entire operation, so two writes to
+the same disk never interleave at all; it becomes possible the moment
+that lock is shortened for streaming, which is exactly what step 1 above
+is closing.
+
+**Reservation stall timeout.** A client that sends `PutHeader` and then
+stalls indefinitely without closing the stream would otherwise hold its
+reservations until a transport-level timeout eventually notices —
+typically much longer than is useful. The server enforces its own bound:
+if no forward progress (first byte, or any subsequent chunk) arrives
+within a configured window, the server aborts the write and releases
+every reservation from step 1 itself, rather than relying solely on
+gRPC/TCP keepalive defaults.
 
 NBSS's per-disk write priority queue (elevator/SSTF-ordered by slot
 index) has a related problem one level down — see §3.12 for why it's
@@ -260,6 +301,14 @@ client this is expected to resolve correctly most of the time without
 even needing the readback, since a retry of identical content produces
 the identical fid by construction (§3.4).
 
+A conflict doesn't always mean confirmed data is already there to read
+back: per §3.3, it can also mean someone else's write for that fid is
+merely *pending*. An immediate readback GET can legitimately come back
+not-found in that case — that's not an anomaly, it's the other write
+still in flight. A client's retry-safety logic should treat "conflict,
+then an immediate not-found" as "try the readback again shortly," not as
+an error condition.
+
 ### 3.10 GET always needs the index
 
 An earlier idea — let the client also supply size on GET, to skip the
@@ -375,6 +424,17 @@ from NBSS's HTTP+gRPC surface:
   and gRPC/HTTP2 already multiplexes many concurrent per-item calls over
   one connection cheaply, so there's no real round-trip cost left for a
   bespoke batch message format to save.
+
+  This "fails at the header" property has two implementation
+  preconditions that don't happen automatically and are binding on both
+  sides, not just a server-side claim: the server must close the RPC
+  with an error status the moment it detects a conflict while processing
+  `PutHeader`, rather than waiting for the client to finish sending; and
+  the client SDK must check for a stream error after every `chunk` send
+  and stop sending on one, rather than queueing the whole payload without
+  checking. A client that blasts every chunk without checking gets no
+  benefit from the header-first design even though the server is doing
+  its part correctly.
 - **`Pan`**: dropped. Disk topology, per-disk CH_d, and placement policy
   are server-internal plumbing (§3.11); external clients have no reason
   to see them and get everything they need through `Bonnie`'s single

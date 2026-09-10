@@ -41,7 +41,10 @@ computed an fid or whether the write that produced an entry was streamed.
   `findLatestRecord`, `computeCHD`, packed-table loading are pure
   replay/lookup logic and don't need to change shape. `handleWrite`,
   `writeDataAt`, and the `intervals` occupancy structure need the
-  pending/confirmed two-phase model from `docs/DESIGN.md` §3.3.
+  two-phase reservation model from `docs/DESIGN.md` §3.3 — note it's
+  two-level (a new fid-level pending set alongside the existing
+  slot-extent `intervals`, not just the latter), plus the reservation
+  stall timeout.
 - `directio.go`: **modify**. The aligned-chunk write loop itself is
   reusable; its input changes from a fully-materialized `[]byte` to a
   stream plus the internal re-alignment buffer described in §3.3.
