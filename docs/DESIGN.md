@@ -335,6 +335,9 @@ watching at runtime because data-grid fullness genuinely changes over
 time, index-count capacity is a static ceiling fixed the moment the pool
 is created, not a live signal to monitor.
 
+If the pool includes zram devices, this is not the complete RAM budget —
+see §3.13.
+
 ### 3.8 Trim stays mandatory, and its internals are unchanged
 
 Because Trim/Compact/Pack is now the *only* path both to reclaim data-grid
@@ -478,6 +481,50 @@ specified — the reservation is what keeps concurrent writes correct
 (no two writes landing on overlapping slots), independent of whatever
 dispatches the underlying I/O. Dropping the queue only removes an
 ordering optimization that had no payoff on this medium at this scale.
+
+### 3.13 zram: kept, unlike the elevator queue — different axis, still pays off
+
+NBSS's zram tier (RAM-backed block devices in the same pool, preferred
+for small files when CH_d allows, per §3.11's `pickZram`) is kept
+unchanged in BSOS, deliberately *not* judged by the same reasoning that
+dropped the elevator queue (§3.12). That reasoning was specific to the
+HDD-vs-flash *access-latency* axis, where flash genuinely erases the
+queue's entire reason to exist. zram sits on a different axis —
+*object-size distribution*, not raw concurrency or medium-driven access
+latency — and that axis doesn't go away on SSD/NVMe:
+
+- Every object, however small, still costs at least one full 4KB slot on
+  real media (§3.1) — zram avoids that waste for small/hot objects by
+  keeping them in RAM instead of paying it on flash.
+- Many small scattered writes to real flash spread across different
+  erase blocks worsen write amplification and wear (§3.12's discussion
+  of why Trim still helps flash, for the same underlying reason). Small
+  objects that land in zram never touch flash for this at all.
+
+This isn't a "we're not built for extreme scale" argument (§3.12's
+reasoning for the queue) — it holds just as well at this system's actual
+bounded scale, as long as the workload includes a meaningful share of
+small objects. It's a workload-shape argument, not a concurrency-shape
+one, so §3.12's conclusion doesn't transfer to it.
+
+**Operational polish over NBSS's version**: NBSS requires an operator to
+manually run `zram load` (restore compressed snapshots into fresh zram
+devices) and `blk find` (refresh `pan.json`) in the right order after
+every restart, before starting the daemon — miss a step and the zram
+tier silently comes back empty, with no obvious error. BSOS's daemon
+loads available snapshots from `zram_snapshot_dir` itself on startup,
+folding that into normal boot instead of leaving it as a manual runbook
+step. This is routine, low-stakes, and recoverable (worst case: the zram
+tier starts empty and refills as new writes land) — automating it doesn't
+conflict with §3.7's principle that rare, consequential decisions stay
+manual; it's the opposite kind of operation.
+
+**Capacity-planning consequence**: §3.7's index-RAM formula is not the
+whole memory story for a pool that includes zram devices — each zram
+device's configured capacity is real RAM, additional to (not instead of)
+the index ceiling. A pool with zram tiers needs
+`MaxIndexRAM(pool) + sum(zram device capacities)` provisioned, not just
+the index term alone.
 
 ## 4. Transport and wire format
 

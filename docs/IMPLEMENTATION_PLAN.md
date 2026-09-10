@@ -67,7 +67,9 @@ plan avoids debugging both at once.
    not after.
 4. **Multi-disk pooling.** `multidisk.go`'s best-fit routing and zram
    tiering, with the pool-wide gate now genuinely exercised across more
-   than one disk.
+   than one disk. Includes the startup auto-load of zram snapshots
+   (`docs/DESIGN.md` §3.13) replacing NBSS's manual `zram load`/`blk find`
+   sequence.
 5. **Trim, fragmentation, Bonnie.** Port `trim.go`/`packed_table.go`/
    `fragmentation.go` (near-unchanged), wire up the `Bonnie` RPC.
 6. **One-hop alias (`alias_for`).** Deliberately its own milestone after

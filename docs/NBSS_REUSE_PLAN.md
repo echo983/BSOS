@@ -37,7 +37,15 @@ computed an fid or whether the write that produced an entry was streamed.
   the `trim_enabled` on/off switch — §3.8 makes Trim non-optional, so the
   config knob to disable it shouldn't exist rather than just default to
   true.
-- `zram.go`, `readonly.go`: **keep**.
+- `zram.go`, `readonly.go`: **keep, plus one behavior change**. zram
+  itself is kept deliberately (§3.13 — a workload-shape argument, not a
+  concurrency-shape one, so it doesn't get judged by §3.12's reasoning
+  for dropping the queue). The change: daemon startup should load
+  available snapshots from `zram_snapshot_dir` itself, folding NBSS's
+  separate manual `nbss zram load` + `blk find` CLI dance into normal
+  boot, per §3.13's operational-polish note — this is new orchestration
+  in the startup path, not a change to `zram.go`'s own snapshot
+  encode/decode logic.
 - `config.go` (+test): **modify**. Remove HTTP-related fields, remove
   `write_memory_budget_bytes`/`write_memory_wait_ms` and friends (§3.3
   deletes that subsystem), remove `trim_enabled`.
