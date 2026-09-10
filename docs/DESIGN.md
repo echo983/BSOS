@@ -36,15 +36,20 @@ place as decisions are revised.
 
 BSOS's physical/persistence layer is carried over from NBSS essentially
 unchanged: fixed-size 4KB slot grid over raw block devices, hash-derived
-slot placement, per-disk read/write priority queues ordered by slot index
-(elevator/SSTF-style scheduling), O_DIRECT writes with buffered reads, and
-background Trim/Compact/Pack for defragmentation. See NBSS's own docs for
-the mechanics; they are not repeated here except where BSOS changes their
+slot placement, O_DIRECT writes with buffered reads, and background
+Trim/Compact/Pack for defragmentation. See NBSS's own docs for the
+mechanics; they are not repeated here except where BSOS changes their
 meaning.
+
+One piece of NBSS's physical layer is *not* carried over: its per-disk
+read/write priority queues, ordered by slot index (elevator/SSTF-style
+scheduling). See §3.12 — this is dropped, not modified, given BSOS's
+confirmed target medium and scale.
 
 What BSOS changes is entirely at the *identity and request-handling*
 layer: who computes an object's fid, when payload data is buffered, how
-collisions are handled, the removal of DELETE/GC, and the transport.
+collisions are handled, the removal of DELETE/GC, the transport, and I/O
+scheduling.
 
 ## 3. Decisions
 
@@ -140,16 +145,9 @@ source, §4) and ordinary conflict detection must read pending
 reservations too, or they'll double-book space that's already spoken for
 by an in-progress stream.
 
-The per-disk write priority queue (§2, elevator/SSTF-ordered by slot
-index) has the same problem one level down: it currently queues whole
-write operations, which made sense when an operation was one fast
-`WriteAt`. It can't usefully reorder something that's still arriving
-from the network. The fix is to lower its granularity: the queued unit
-becomes one slot-aligned chunk flush (step 2 above), not one whole
-object — the reservation from step 1 is what prevents two different
-objects' chunks from landing on overlapping slots, and the queue keeps
-doing its normal job of ordering those chunk-level disk writes by
-address.
+NBSS's per-disk write priority queue (elevator/SSTF-ordered by slot
+index) has a related problem one level down — see §3.12 for why it's
+dropped rather than adapted to chunk granularity.
 
 Implementation detail this implies: chunks arriving from the gRPC stream
 won't be slot-aligned on their own (their size is whatever the client's
@@ -300,6 +298,44 @@ carries over as-is:
   selection for a write with `alias_for` set picks one disk for the whole
   operation, matching how NBSS's own `tryJumpWrite` already retries
   within a single already-selected disk.
+
+### 3.12 Target medium and scale: drop NBSS's elevator I/O queue, don't adapt it
+
+BSOS's target medium is SSD/NVMe, not HDD, and its scale is bounded by
+the trust model (§1) — an internal tool for a small, mutually trusted
+group, not a system designed to absorb extreme concurrent write load
+from many independent, mutually untrusted clients.
+
+NBSS's per-disk read/write priority queue (a slot-index-ordered
+min-heap, reads always draining ahead of writes) is a real, proven
+technique — but its entire value comes from HDD physics: seek and
+rotational latency dominate random-access cost on a spinning disk, so
+reordering pending I/O by physical address measurably reduces head
+movement. Flash has no seek cost; random and sequential access latency
+are close enough that address-based reordering buys nothing. NVMe's own
+strength — high native queue depth, many in-flight commands served in
+parallel by the controller — works *against* an app-level scheme that
+sorts requests into one queue and drains them in address order rather
+than dispatching them concurrently.
+
+Given that, and given the bounded scale, BSOS doesn't adapt the queue to
+chunk granularity (§3.3's next-best option, superseded by this): it
+drops the queue and the read-over-write priority tiering with it, and
+replaces both with a simple bounded-concurrency dispatcher — a semaphore
+capping how many chunk-level reads/writes are in flight at once, with no
+sorting and no priority class. The cap exists only to bound resource use
+under a burst, not to optimize ordering. Reads and writes are dispatched
+concurrently and compete equally; at this system's real concurrency
+levels, a serial drain-and-prioritize queue was solving a problem that
+mostly doesn't occur, and concurrent dispatch already gets most of what
+read-priority was informally providing (nothing sits stuck behind a long
+line to begin with).
+
+This does not change §3.3's reservation model, which stays exactly as
+specified — the reservation is what keeps concurrent writes correct
+(no two writes landing on overlapping slots), independent of whatever
+dispatches the underlying I/O. Dropping the queue only removes an
+ordering optimization that had no payoff on this medium at this scale.
 
 ## 4. Transport and wire format
 

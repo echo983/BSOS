@@ -45,9 +45,13 @@ computed an fid or whether the write that produced an entry was streamed.
 - `directio.go`: **modify**. The aligned-chunk write loop itself is
   reusable; its input changes from a fully-materialized `[]byte` to a
   stream plus the internal re-alignment buffer described in §3.3.
-- `queue.go`: **modify**. Same data structure (a slot-index-ordered
-  min-heap), but the queued unit drops from "one write operation" to
-  "one aligned chunk flush," per §3.3.
+- `queue.go`: **drop.** Its whole value is HDD seek-time reduction
+  (§3.12); on BSOS's SSD/NVMe target at this system's bounded scale, an
+  address-sorted single-drain queue has no payoff and NVMe's native
+  concurrency does the job better. Replaced by a new, much smaller
+  bounded-concurrency dispatcher (a semaphore, no sorting, no read/write
+  priority tiering) — not a port of the min-heap, a different and
+  simpler mechanism.
 - `grpc.go`: **Put handler: rewrite. Get/Head/Bonnie/Health: modify.**
   The current `Put` handler accumulates every chunk into one `[]byte`
   before writing once — that's precisely the pattern being eliminated,
@@ -91,8 +95,9 @@ The largest, most mechanically-safe share of NBSS's code — everything
 that defines or reads the on-disk format, multi-disk routing, Trim,
 fragmentation analysis, zram handling — carries over with little to no
 change. The work concentrates entirely in the request-handling core of
-`internal/daemon` (`state.go`'s write path, `directio.go`, `queue.go`,
-`grpc.go`'s `Put`, and the parts of `server.go` that survive gRPC-only),
+`internal/daemon` (`state.go`'s write path, `directio.go`, a new
+bounded-concurrency dispatcher replacing `queue.go`, `grpc.go`'s `Put`,
+and the parts of `server.go` that survive gRPC-only),
 because that's where the streaming/concurrency model in `docs/DESIGN.md`
 §3.3 actually bites. Everything HTTP-shaped and the write-memory-budget
 subsystem are deleted outright, not ported.
