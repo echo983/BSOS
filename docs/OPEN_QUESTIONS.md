@@ -8,66 +8,28 @@
   as an occasional operational risk, not engineered around. See §3.8.
 - Health RPC → added, same shape as NBSS's. See §4.
 
-## Companion systems: found, not missing — but need porting
+## Reference precedent, not a target: notFinder / notFinderLinux
 
-A design-closure review had flagged "no manifest format" and "no shared
-client SDK" as unstarted. Both already exist, in two real client
-repositories built on NBSS:
+A design-closure review had flagged "no manifest format for chunking" and
+"no shared client SDK" as unstarted companion systems (§3.5, and the
+trust-model assumption that exactly one shared client library exists).
+Both remain genuinely unstarted *for BSOS* — nothing here changes that.
 
-- https://github.com/echo983/notFinder (Windows, WinFSP)
-- https://github.com/echo983/notFinderLinux (Linux, FUSE3)
+What's worth recording: https://github.com/echo983/notFinder and
+https://github.com/echo983/notFinderLinux are a real, shipping product in
+NBSS's own ecosystem (not a BSOS target) that already proves this shape
+of system is buildable: a shared `nbss-core` client crate with a typed,
+versioned chunk-manifest format, plus a client-side "PVLog" layer giving
+versioning/rollback/zero-copy moves purely over an immutable
+content-addressed store — the same dumb-server/smart-client split BSOS is
+built around. See `reference_notfinder_repos` in project memory for
+detail.
 
-Both vendor a shared `nbss-core` Rust crate that is exactly the "one
-shared client library" the trust model discussion assumed. It already
-implements:
-
-- A typed, versioned chunk manifest (`nbss-core/src/manifest.rs`, magic
-  `S0L0UN0^`): header with `chunk_pow2` + `chunk_count` + `tail_size`,
-  entries of `(fid, is_manifest)` — manifests can nest, not just a flat
-  chunk list.
-- A "PVLog" layer (`pvlog.rs`/`pvlog_writer.rs`/`pvlog_replay.rs`) that
-  builds versioning, rollback, and zero-copy cross-directory moves as a
-  client-side log over NBSS's immutable blobs — i.e., this product
-  already treats NBSS as a dumb content-addressed store and puts all the
-  smart layering on the client side, the same split BSOS is built around.
-
-**But it's built against NBSS's current wire contract** (server-derived
-fid, HTTP+gRPC, `DeleteRequest`/`delete_object`) — none of it speaks
-BSOS's contract (client-declared fid, gRPC-only, header-first streaming
-Put, no Delete). Porting `nbss-core` (and whatever in both daemons calls
-it directly) to BSOS is real work across two production codebases, not a
-side effect of finishing this design.
-
-## New conflict found while reading them
-
-`nbss-core`'s only caller of NBSS's per-object `delete_object` is PVLog's
-own compaction routine (`fs_state.rs`, the function that consolidates
-many small log segments into one frame): it deletes the now-superseded
-segment and head objects after compaction succeeds. This is the client's
-own log-GC, analogous to what Trim does for BSOS's data grid — not
-deletion of user file content.
-
-Checked: the user-facing per-file/per-reality delete path
-(`notfinder-daemon`'s `soft_delete`/`archive`/`purge_reality`,
-`/api/v1/realities/{id}/files/delete`) never calls `delete_object` on a
-content fid anywhere in the tree — it's a namespace/PVLog-level
-unreference, already compatible with BSOS's no-DELETE model (§3.7) as
-designed.
-
-So the actual conflict is narrow: **PVLog's own log-compaction currently
-relies on deleting superseded internal segments**, and BSOS has no
-DELETE at all. Under BSOS, those superseded PVLog segments would become
-permanent garbage until whatever eventually retires/migrates the whole
-pool (§3.7's still-unbuilt higher layer) — a real behavior change from
-what this code does today, not yet decided whether that's acceptable or
-whether it changes anything about §3.7.
+BSOS does not need to be compatible with this codebase. If someone later
+wants to port it onto BSOS, that's a small, bounded change, not a
+redesign — noted so nobody treats it as a blocker. No action item here.
 
 ## Still open
 
-- Whether PVLog's own segment garbage accumulating forever (previous
-  section) is acceptable, or whether it changes the §3.7 "no DELETE at
-  all, ever" decision for this one narrow internal case.
-- Porting plan/scope for `nbss-core` (both repos) from NBSS's current
-  contract to BSOS's.
 - Higher-layer pool-lifecycle/retention system (§3.7) — still doesn't
-  exist anywhere, still needed regardless of the above.
+  exist anywhere, still needed regardless of anything above.
