@@ -120,36 +120,48 @@ behind whichever stream happens to be in flight — an unacceptable
 throughput regression, not a minor inefficiency.
 
 The fix is a two-phase commit inside the write path, not a lock-scope
-tweak. It has to reserve at **two levels**, not one — see the fid-level
-gap called out below the steps, found on a later consistency pass:
+tweak. It reserves at **two levels, with two different scopes** — a
+pool-wide fid-level gate, then a per-disk extent-level reservation — not
+one lock doing both. Getting the fid-level gate's scope wrong (per-disk
+instead of pool-wide) was tried once and found broken; see the
+explanation below the steps.
 
-1. On receiving `PutHeader`, take the per-disk lock just long enough to
-   check *and reserve, atomically*:
-   - the target data-grid extent, against confirmed occupancy and other
-     in-flight extent reservations (`intervals`);
+0. Before anything else — before disk selection even runs — take one
+   **pool-wide** lock (a single mutex covering the whole daemon, not any
+   one disk) just long enough to check *and reserve, atomically*:
    - the fid-level registration for `fid` itself, against confirmed
-     entries (data or jump bucket) and other in-flight fid-level
-     reservations;
-   - if `alias_for` is set, the fid-level registration for `alias_for`
-     too, under the same two checks.
+     entries anywhere in the pool (the existing broadcast existence
+     check, §3.11) and other in-flight pool-wide fid-level reservations;
+   - if `alias_for` is set, the fid-level registration for `alias_for`,
+     under the same check.
 
-   If any of these checks fails, release whatever was already reserved
-   in this step and return conflict — nothing is held. Otherwise all of
-   them are marked pending and the lock is released. This is the only
-   place a conflict (§3.4) can be detected, and it must happen before any
-   bytes are accepted.
-2. Stream chunks into the reserved extent without holding the lock,
+   If either check fails, release whatever was already reserved in this
+   step and return conflict immediately — disk selection never runs.
+   Otherwise both are marked pending pool-wide and the lock is released.
+   This lock is held only for an in-memory set lookup/insert, never for
+   any I/O, and is never held at the same time as a per-disk lock (no
+   nesting, no deadlock risk).
+1. Pick the target disk (§3.11's existing best-fit-by-CH_d policy, using
+   `total_size`), then take *that disk's* lock just long enough to check
+   *and reserve* the target data-grid extent, against confirmed occupancy
+   and other in-flight extent reservations (`intervals`) on that disk —
+   this is a second, disk-scoped reservation, independent of step 0's
+   pool-wide one. A failure here (extremely unlikely given CH_d guided
+   the choice, but possible) also returns conflict; step 0's pool-wide
+   fid reservation is released again in that case.
+2. Stream chunks into the reserved extent without holding either lock,
    accumulating them into slot-aligned pieces before each `WriteAt` (see
    below).
 3. On a clean finish with a byte count matching `total_size`, take the
-   lock again just long enough to write the index entry (and the
-   `alias_for` pair, if set) and flip every reservation from step 1 to
-   confirmed.
+   disk lock again just long enough to write the index entry (and the
+   `alias_for` pair, if set) and flip the extent reservation to
+   confirmed; separately flip the pool-wide fid reservation(s) from step
+   0 to confirmed too.
 4. On any abort (byte-count mismatch, stream error, client
    cancellation, a reservation stall timeout — see below), release every
-   reservation from step 1 without ever writing an index entry — the fid
-   and the extent are free again, exactly as if the attempt never
-   happened.
+   reservation from steps 0 and 1 without ever writing an index entry —
+   the fid(s) and the extent are free again, exactly as if the attempt
+   never happened.
 
 This pending-reservation state does not exist in NBSS today; its
 occupancy tracking (`intervals`) only ever represents confirmed writes,
@@ -174,8 +186,25 @@ on disk but become permanently unreachable through that fid, with no
 error raised to either caller. This can't happen in NBSS today only
 because NBSS holds its lock for an entire operation, so two writes to
 the same disk never interleave at all; it becomes possible the moment
-that lock is shortened for streaming, which is exactly what step 1 above
+that lock is shortened for streaming, which is exactly what step 0 above
 is closing.
+
+**Why that fid-level reservation has to be pool-wide, not per-disk.** An
+earlier version of this fix scoped the fid-level reservation to whichever
+disk the write landed on, reusing the disk's own lock instead of a
+separate pool-wide one. That doesn't work: fid identity is a pool-wide
+concept (existence checks already broadcast across every disk, §3.11),
+but which disk a given write lands on is a heuristic decision made fresh
+each time (best-fit by current CH_d). Two concurrent attempts touching
+the same fid — two plain writes, or a plain write racing an
+`alias_for` targeting it — can each independently pass a per-disk check
+and get routed to *different* disks by that heuristic, since neither
+disk's reservation state knows what the other disk is doing. The exact
+silent-overwrite failure described above then reappears in a cross-disk
+form that a per-disk lock structurally cannot see, no matter how
+correctly it's implemented. Only a lock whose scope matches fid's actual
+scope — the whole pool — closes this; that's why step 0 runs before disk
+selection, not as part of it.
 
 **Reservation stall timeout.** A client that sends `PutHeader` and then
 stalls indefinitely without closing the stream would otherwise hold its
@@ -183,8 +212,8 @@ reservations until a transport-level timeout eventually notices —
 typically much longer than is useful. The server enforces its own bound:
 if no forward progress (first byte, or any subsequent chunk) arrives
 within a configured window, the server aborts the write and releases
-every reservation from step 1 itself, rather than relying solely on
-gRPC/TCP keepalive defaults.
+every reservation from steps 0 and 1 itself, rather than relying solely
+on gRPC/TCP keepalive defaults.
 
 NBSS's per-disk write priority queue (elevator/SSTF-ordered by slot
 index) has a related problem one level down — see §3.12 for why it's
@@ -333,14 +362,18 @@ computation to the client (§3.2) doesn't touch this axis at all, so it
 carries over as-is:
 
 - **Write**: server still picks the target disk using NBSS's existing
-  best-fit-by-CH_d policy. This only needs `size`, which is already known
-  from `PutHeader` before any data arrives, so it composes cleanly with
-  the streaming write path (§3.3).
+  best-fit-by-CH_d policy — but only after §3.3's pool-wide fid-level
+  gate (step 0) has already passed. Disk selection only needs `size`,
+  which is already known from `PutHeader` before any data arrives, so it
+  still composes cleanly with the streaming write path; it just no
+  longer runs first.
 - **Read / existence-check**: server still broadcasts to all disks in
   parallel and takes the first successful answer (NBSS's `readAny`/
   `findExistingSize`), rather than maintaining a separate fid→disk
   directory — unchanged, since this was never a function of who computes
-  fid either.
+  fid either. This broadcast is what §3.3's pool-wide gate checks against
+  for confirmed entries; the gate adds a pending layer on top of it, it
+  doesn't replace it.
 - **Alias registration**: `alias_for` (§3.4) and its target fid must land
   as an adjacent index-entry pair on the *same* disk (the jump-indicator/
   real-entry pairing is scanned per-disk at boot replay), so disk

@@ -26,7 +26,11 @@ computed an fid or whether the write that produced an entry was streamed.
 
 - `multidisk.go`: **keep**, minus `probeItems` and `deleteAll` (Probe
   and Delete are both gone, §4/§3.7). `selectDiskForWrite`/`pickZram`/
-  `pickNonZram`/`readAny`/`findExistingSize` carry over per §3.11.
+  `pickNonZram`/`readAny`/`findExistingSize` carry over per §3.11, but
+  `selectDiskForWrite` now only ever gets called *after* the new
+  pool-wide fid gate (§3.3 step 0, see `state.go`/new-component entry
+  below) has already passed — it's no longer the first thing that runs
+  on a write.
 - `fragmentation.go` (+test): **keep**. The jump-target exclusion logic
   already does exactly what §3.8 needs.
 - `trim.go`, `packed_table.go` (+tests), `jump_info.go`: **keep**, minus
@@ -39,12 +43,23 @@ computed an fid or whether the write that produced an entry was streamed.
   deletes that subsystem), remove `trim_enabled`.
 - `state.go`: **modify, not rewrite**. `loadIndexIntoDB`,
   `findLatestRecord`, `computeCHD`, packed-table loading are pure
-  replay/lookup logic and don't need to change shape. `handleWrite`,
-  `writeDataAt`, and the `intervals` occupancy structure need the
-  two-phase reservation model from `docs/DESIGN.md` §3.3 — note it's
-  two-level (a new fid-level pending set alongside the existing
-  slot-extent `intervals`, not just the latter), plus the reservation
-  stall timeout.
+  replay/lookup logic and don't need to change shape. `handleWrite` and
+  the `intervals` occupancy structure need the *disk-scoped half* of
+  `docs/DESIGN.md` §3.3's model (step 1: extent reservation), plus the
+  reservation stall timeout. The *pool-wide half* (step 0: fid-level
+  gate) does not belong here — see the new `Server`-level component
+  below, not a `DeviceState` one.
+- **New, no NBSS equivalent**: a pool-wide fid-reservation registry
+  (`docs/DESIGN.md` §3.3 step 0) — one mutex-guarded in-memory set for
+  the whole `Server`, not per-`DeviceState`. Checked and reserved before
+  disk selection runs, released on commit or abort alongside the
+  per-disk extent reservation. This has no NBSS precedent: NBSS never
+  needed it because its lock is held for an entire operation, so the
+  cross-disk race this closes (a write to fid A racing a concurrent
+  `alias_for: A` write that a heuristic disk-selection step might route
+  to a *different* disk) can't occur there. Lives at the `Server` level
+  (the thing with visibility across all disks), most naturally alongside
+  whatever remains of `server.go`'s orchestration, not inside `state.go`.
 - `directio.go`: **modify**. The aligned-chunk write loop itself is
   reusable; its input changes from a fully-materialized `[]byte` to a
   stream plus the internal re-alignment buffer described in §3.3.
@@ -65,7 +80,9 @@ computed an fid or whether the write that produced an entry was streamed.
 - `server.go`: **mostly delete, rewrite what's left.** Every HTTP
   handler goes (§4: gRPC only). Multi-disk wiring and startup
   orchestration that isn't HTTP-specific needs reorganizing around
-  what's left.
+  what's left — including hosting the new pool-wide fid-reservation
+  registry described in the `state.go` entry above, which belongs at
+  this level, not inside any one disk's state.
 - `write_budget.go` (+2 tests): **drop.** The subsystem it implements no
   longer exists (§3.3).
 - `memdiag.go`: **modify**, reduced scope. Its heap-delta-triggered
