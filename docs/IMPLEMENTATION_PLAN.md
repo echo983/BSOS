@@ -147,10 +147,18 @@ plan avoids debugging both at once.
    pool diagnostic helpers, and graceful shutdown on SIGINT/SIGTERM with in-flight drain.
    Verified with unit tests, `-race`, and dedicated VPS systemd deployment.
    See `MILESTONE_7_VALIDATION_2026-09-10.md`.
-8. **Go client library.** Implements `docs/CLIENT_SPEC.md` in full
-   (§4 below): fid computation, streaming Put/Get/Head/Bonnie/Health,
-   jump-retry helper, readback-based retry-safety helper.
-9. **Basic CLI**, built on milestone 8's library.
+8. **Go client library — done.**
+   Implements `docs/CLIENT_SPEC.md` in full in `pkg/client`:
+   fid computation (`xxh3_64`), streaming `Put`/`Get`/`Head`/`Bonnie`/`Health`,
+   early rejection stopping (§2.3), one-hop jump-retry helper (`PutWithJumpRetry`),
+   and readback-based retry-safety helper (`VerifyContent`).
+   Excludes chunking/manifests per spec.
+9. **Basic CLI — done.**
+   CLI subcommands in `cmd/bsos` (`put`, `get`, `head`, `bonnie`, `health`)
+   wrapping the Go client library with collision jump-retry handling, raw byte I/O,
+   and range retrieval.
+   Verified end-to-end on local host and Debian 13 VPS.
+   See `MILESTONE_8_9_VALIDATION_2026-09-10.md`.
 
 ## 3. Repo bootstrap approach
 

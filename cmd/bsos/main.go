@@ -15,6 +15,16 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "put":
+		os.Exit(runPut(os.Args[2:]))
+	case "get":
+		os.Exit(runGet(os.Args[2:]))
+	case "head":
+		os.Exit(runHead(os.Args[2:]))
+	case "bonnie":
+		os.Exit(runBonnie(os.Args[2:]))
+	case "health":
+		os.Exit(runHealth(os.Args[2:]))
 	case "blk":
 		os.Exit(runBlk(os.Args[2:]))
 	case "zram":
@@ -96,19 +106,16 @@ func runBlk(args []string) int {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  bsos blk init <device> [flags]")
-	fmt.Println("  bsos blk find [flags]")
-	fmt.Println("  bsos blk info <device>")
-	fmt.Println("  bsos blk index-backup [flags]")
-	fmt.Println("  bsos blk index-restore <device> [flags]")
-	fmt.Println("  bsos blk index-compact [flags]")
-	fmt.Println("  bsos blk packed-scrub [flags]")
-	fmt.Println("  bsos zram create <size> [flags]")
-	fmt.Println("  bsos zram flush [flags]")
-	fmt.Println("  bsos zram load [flags]")
+	fmt.Println("  bsos put [flags] [file|-]       Write object and output FID (auto-retries collisions via jump)")
+	fmt.Println("  bsos get [flags] <fid> [file|-] Retrieve object (supports -range)")
+	fmt.Println("  bsos head [flags] <fid>         Inspect object size and existence")
+	fmt.Println("  bsos bonnie [flags]             Query largest single-object placement estimate")
+	fmt.Println("  bsos health [flags]             Check daemon and pool health")
+	fmt.Println("  bsos blk <subcommand> [flags]   Direct block device operations (init, find, info, ...)")
+	fmt.Println("  bsos zram <subcommand> [flags]  zram tier management (create, flush, load)")
 	fmt.Println("Notes:")
-	fmt.Println("  init/find require root when accessing block devices")
-	fmt.Println("  find writes pan.json in the current directory")
+	fmt.Println("  Storage is content-addressed: fid = xxh3_64(content)")
+	fmt.Println("  Default daemon address is 127.0.0.1:9090 or $BSOS_ADDR")
 }
 
 func printBlkUsage() {
