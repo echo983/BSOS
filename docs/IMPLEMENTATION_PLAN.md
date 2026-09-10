@@ -50,11 +50,18 @@ correctly" from "do concurrent writes stay correct and fast" — conflating
 those two concerns is exactly where the design-review bugs lived, so the
 plan avoids debugging both at once.
 
-1. **Bootstrap.** Port `internal/blk` (layout, addressing, index
-   encoding, CLI backup/restore/scrub) essentially unchanged. Get
-   `bsos blk init`/`find`/`info` working. Cheaply validates the
-   "on-disk format is unchanged from NBSS" claim (§5) before anything
-   hard is attempted.
+1. **Bootstrap — done.** Ported `internal/blk` and `internal/pan`
+   unchanged (provenance in `THIRD_PARTY_ORIGIN.md`); `bsos blk
+   init`/`find`/`info`/`index-backup`/`index-restore`/`index-compact`/
+   `packed-scrub` all build, vet clean, and the copied test suite
+   (`internal/blk`'s `*_test.go`) passes. Verified for real, not just
+   compiled: `bsos blk init` against `/dev/sdb` (the dev/test USB drive)
+   produced a valid NBSS v2 header and index stream, `bsos blk find`
+   located it via `/dev/disk/by-id` and wrote a correct `pan.json`, and
+   `bsos blk info` read it back consistently — the "on-disk format is
+   unchanged from NBSS" claim (§5) is now demonstrated, not just
+   asserted. `go.mod` (module `bsos`, go 1.21) and a Go toolchain
+   (`golang-go` 1.24 via apt) are set up.
 2. **Single-disk Put/Get, correct but not yet concurrency-optimized.**
    New wire format (client-declared fid, streaming header-first Put) end
    to end, but the write path still holds its disk lock for the whole
