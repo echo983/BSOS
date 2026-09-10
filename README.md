@@ -8,11 +8,13 @@ untrusted participants.
 
 ## Status
 
-Design consensus only (v0) — no implementation yet. This repository
-currently holds the agreed design, not code. See `docs/DESIGN.md` for the
-full spec as agreed so far, `docs/OPEN_QUESTIONS.md` for what's still
-undecided, and `docs/NBSS_REUSE_PLAN.md` for what carries over from NBSS's
-codebase versus what needs real rework.
+Design is complete as of the `design-v0` tag — see `docs/DESIGN.md` for
+the full spec, `docs/OPEN_QUESTIONS.md` for what's still undecided
+(currently nothing), and `docs/NBSS_REUSE_PLAN.md` for what carries over
+from NBSS's codebase versus what needs real rework. Construction planning
+is underway: see `docs/IMPLEMENTATION_PLAN.md` for the test strategy,
+milestones, repo bootstrap approach, and config schema. No code has
+landed yet.
 
 ## Relationship to NBSS
 
