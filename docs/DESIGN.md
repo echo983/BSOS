@@ -155,6 +155,15 @@ delegated entirely to a higher layer that this system does not own. The
 operational unit for reclaiming space is a whole pool (provision, fill,
 retire, reinitialize), not incremental per-object deletion.
 
+That higher layer is explicitly a person, not software: an operator
+decides what's still wanted and when a pool retires, on the same
+operational judgment basis as any other decision this design leaves to a
+human rather than automating (§1). "GC" at that level is physical —
+decommissioning the disk — not a service this system calls. This is a
+deliberate choice not to build tooling for something rare and consequential
+enough that automating it would be the wrong instinct, not a gap to fill
+later.
+
 NBSS's tombstone entry type and everything that produces or interprets it
 (the DELETE routes, the `IsTombstone` branch in index replay) has no
 reason to exist in BSOS and is dropped.
