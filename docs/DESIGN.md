@@ -324,12 +324,26 @@ drops the queue and the read-over-write priority tiering with it, and
 replaces both with a simple bounded-concurrency dispatcher — a semaphore
 capping how many chunk-level reads/writes are in flight at once, with no
 sorting and no priority class. The cap exists only to bound resource use
-under a burst, not to optimize ordering. Reads and writes are dispatched
-concurrently and compete equally; at this system's real concurrency
-levels, a serial drain-and-prioritize queue was solving a problem that
-mostly doesn't occur, and concurrent dispatch already gets most of what
+under a burst, not to optimize ordering.
+
+**Scope: one dispatcher per disk, not one global dispatcher.** Every
+other piece of state this design coordinates on — the lock, `intervals`,
+CH_d — is per-disk (§3.11); the dispatcher matches that. A burst of
+activity on one disk must not throttle reads or writes on an unrelated
+disk in the same pool.
+
+**Accepted trade-off, named explicitly (parallel to §3.8's Trim-fairness
+call): reads no longer get any latency guarantee over writes.** Reads
+and writes compete equally for the same dispatcher's slots. Under
+sustained write load a GET can queue behind writes for a dispatcher slot
+— this is a real, deliberate consequence of dropping the priority
+tiering, not an incidental side effect to discover later. It's accepted
+for the same reason as §3.8: at this system's real concurrency levels a
+serial drain-and-prioritize scheme was solving a problem that mostly
+doesn't occur, and concurrent dispatch already gets most of what
 read-priority was informally providing (nothing sits stuck behind a long
-line to begin with).
+line to begin with) — but the residual risk under an actual burst is
+real and is being knowingly accepted, not overlooked.
 
 This does not change §3.3's reservation model, which stays exactly as
 specified — the reservation is what keeps concurrent writes correct

@@ -49,9 +49,10 @@ computed an fid or whether the write that produced an entry was streamed.
   (§3.12); on BSOS's SSD/NVMe target at this system's bounded scale, an
   address-sorted single-drain queue has no payoff and NVMe's native
   concurrency does the job better. Replaced by a new, much smaller
-  bounded-concurrency dispatcher (a semaphore, no sorting, no read/write
-  priority tiering) — not a port of the min-heap, a different and
-  simpler mechanism.
+  bounded-concurrency dispatcher — one semaphore per disk (matching the
+  per-disk lock/`intervals`/CH_d granularity everywhere else), no
+  sorting, no read/write priority tiering — not a port of the min-heap,
+  a different and simpler mechanism.
 - `grpc.go`: **Put handler: rewrite. Get/Head/Bonnie/Health: modify.**
   The current `Put` handler accumulates every chunk into one `[]byte`
   before writing once — that's precisely the pattern being eliminated,
