@@ -65,6 +65,11 @@ func run() error {
 	if !h.Ok {
 		return fmt.Errorf("degraded health")
 	}
+	bonnie, err := c.Bonnie(ctx, &bsospb.Empty{})
+	if err != nil {
+		return fmt.Errorf("bonnie RPC: %w", err)
+	}
+	log.Printf("bonnie ch_d_pow2: %d", bonnie.GetChDPow2())
 	var objects []object
 	if *mode == "seed" {
 		stamp := time.Now().UTC().Format(time.RFC3339Nano)

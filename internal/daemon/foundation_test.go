@@ -579,7 +579,7 @@ type brokenIndexReader struct{}
 
 func (brokenIndexReader) ReadAt([]byte, int64) (int, error) { return 0, io.ErrClosedPipe }
 func TestReplayReadErrorIsFatal(t *testing.T) {
-	if _, _, _, err := replayIndex(brokenIndexReader{}, blk.GridStart+8<<20); err == nil {
+	if _, _, _, _, err := replayIndex(brokenIndexReader{}, blk.GridStart+8<<20); err == nil {
 		t.Fatal("index I/O error interpreted as empty disk")
 	}
 }

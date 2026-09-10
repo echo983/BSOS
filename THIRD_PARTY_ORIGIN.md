@@ -13,13 +13,11 @@ unchanged between NBSS and BSOS, per `docs/DESIGN.md` §5).
 | `internal/zram/` | NBSS `internal/zram/` | Initially copied with import-path rewrites. BSOS now adds snapshot validation/recovery orchestration, corrects the hot_add read interface, checks device identity, and uses BSOS default paths; see the milestone 4 validation report. |
 
 Also ported, as logic (not files) rather than copied verbatim, per
-`docs/NBSS_REUSE_PLAN.md`: `internal/daemon/multidisk.go` (best-fit
-disk selection) and `internal/daemon/chd.go` (`computeCHD` and its
-helpers) follow NBSS's `internal/daemon` algorithms, with BSOS boundary checks for
-invalid sizes/probabilities and failed devices, adapted
-to this repo's own `interval`/`DeviceState` types rather than copied
-byte-for-byte, since NBSS's originals are entangled with types this
-repo's write path doesn't share (docs/DESIGN.md §3.3's two-phase model).
+`docs/NBSS_REUSE_PLAN.md`:
+- `internal/daemon/multidisk.go` (best-fit disk selection) and `internal/daemon/chd.go` (`computeCHD` and its helpers) follow NBSS's `internal/daemon` algorithms, with BSOS boundary checks for invalid sizes/probabilities and failed devices, adapted to this repo's own `interval`/`DeviceState` types.
+- `internal/daemon/packed_table.go` (packed table record encoding and decoding) follows NBSS's packed table format.
+- `internal/daemon/fragmentation.go` (fragmentation metrics and power-of-two size calculations) follows NBSS's fragmentation threshold algorithms.
+- `internal/daemon/trim.go` (mandatory background trim, container packing, packed table creation, anchor append, tombstone writing, and index compaction) adapted to BSOS's RAM index and two-phase write model.
 
 Copied (or logic-ported) as of the point each was brought in during
 construction. Future changes to these packages should be made directly

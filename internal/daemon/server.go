@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -35,6 +36,10 @@ type Server struct {
 	stallTimeout    time.Duration
 	gateFanoutLimit time.Duration
 	degraded        bool
+
+	stopCh       chan struct{}
+	closeOnce    sync.Once
+	trimInterval time.Duration
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -79,6 +84,7 @@ func NewServer(cfg Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open %s: %w", dev.DevicePath, err)
 		}
+		disk.cfg = cfg
 		for _, previous := range disks {
 			if previous.diskID == disk.diskID {
 				disk.Close()
@@ -103,7 +109,7 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 	}
 	opened = true
-	return &Server{
+	srv := &Server{
 		disks:           disks,
 		degraded:        len(warnings) > 0,
 		gate:            newPoolGate(),
@@ -112,10 +118,19 @@ func NewServer(cfg Config) (*Server, error) {
 		chdTargetP:      cfg.ChdTargetP,
 		stallTimeout:    cfg.ReservationStallTimeout,
 		gateFanoutLimit: cfg.PoolGateFanoutTimeout,
-	}, nil
+		stopCh:          make(chan struct{}),
+		trimInterval:    cfg.TrimInterval,
+	}
+	srv.startTrimScheduler(cfg.TrimInterval)
+	return srv, nil
 }
 
 func (s *Server) Close() error {
+	s.closeOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
 	var firstErr error
 	for _, disk := range s.disks {
 		if err := disk.Close(); err != nil && firstErr == nil {
@@ -301,6 +316,63 @@ func (s *Server) Health(_ context.Context, _ *bsospb.Empty) (*bsospb.HealthRespo
 		d.indexMu.RUnlock()
 	}
 	return &bsospb.HealthResponse{Ok: healthy}, nil
+}
+
+func (s *Server) startTrimScheduler(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, disk := range s.disks {
+					if !s.canWrite(disk, 1) {
+						continue
+					}
+					if err := disk.maybeTrim(); err != nil {
+						log.Printf("bsosd: trim failed disk_id=0x%X device=%s: %v", disk.diskID, disk.devicePath, err)
+					}
+				}
+			case <-s.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) bonnieCHDPow2() (int, bool) {
+	var maxChd uint64
+	for _, disk := range s.disks {
+		if zram.IsZramDevicePath(disk.devicePath) {
+			continue
+		}
+		if !s.canWrite(disk, 1) {
+			continue
+		}
+		chd := disk.currentCHD(s.chdTargetP)
+		if chd > maxChd {
+			maxChd = chd
+		}
+	}
+	if maxChd == 0 {
+		return 0, false
+	}
+	capSize := maxChd
+	if s.maxPut > 0 && capSize > s.maxPut {
+		capSize = s.maxPut
+	}
+	return pow2Log(capSize), true
+}
+
+func (s *Server) Bonnie(_ context.Context, _ *bsospb.Empty) (*bsospb.BonnieResponse, error) {
+	pow2, ok := s.bonnieCHDPow2()
+	if !ok {
+		return &bsospb.BonnieResponse{ChDPow2: 0}, nil
+	}
+	return &bsospb.BonnieResponse{ChDPow2: uint32(pow2)}, nil
 }
 
 // stallingChunkReader adapts a Put client-stream into an io.Reader,

@@ -129,8 +129,13 @@ plan avoids debugging both at once.
    discovery, decompress, restore, and range readback verified via `vps-smoke`.
    See `MILESTONE_4_VALIDATION_2026-09-10.md` for reproducible commands and evidence.
 
-5. **Trim, fragmentation, Bonnie.** Port `trim.go`/`packed_table.go`/
-   `fragmentation.go` (near-unchanged), wire up the `Bonnie` RPC.
+5. **Trim, fragmentation, Bonnie — done.**
+   Ported `packed_table.go`, `fragmentation.go`, and `trim.go` into BSOS daemon.
+   Continuous mandatory background Trim defragmentation packs small direct
+   objects into container objects and appends packed table anchors, verifiable across
+   restart replay and crash-safety failpoints. Jump-alias targets, containers, and packed
+   tables are strictly excluded from defragmentation. Wired up `Bonnie` RPC with
+   `bonnieCHDPow2()` policy aggregating non-zram writable disks and capping by `max_put_bytes`.
 6. **One-hop alias (`alias_for`).** Deliberately its own milestone after
    the core write path and Trim are both stable — it touches both the
    pool-wide gate (two fids, not one) and Trim's jump-target exclusion,

@@ -8,8 +8,10 @@ untrusted participants.
 
 ## Status
 
-Design is complete at `design-v0`. Implementation milestones 1–4 are
-complete; milestone 5 (Trim, fragmentation, Bonnie) is next.
+Design is complete at `design-v0`. Implementation milestones 1–5 are
+complete; milestone 6 (One-hop alias) is next.
+Continuous mandatory Trim defragmentation, container packing, crash-safety
+failpoints, and Bonnie RPC have passed all unit and race tests.
 Routing/recovery tests, real two-disk verification, and real zram host
 acceptance gate on Debian 13 VPS have passed. See [milestone 4 validation](docs/MILESTONE_4_VALIDATION_2026-09-10.md).
 The tree also includes the foundation repairs described in

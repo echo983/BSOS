@@ -35,6 +35,14 @@ type Config struct {
 	// docs/DESIGN.md §3.13: where zram snapshots are flushed to and
 	// auto-loaded from at startup.
 	ZramSnapshotDir string
+
+	// docs/DESIGN.md §3.8: Trim configuration (mandatory, no on/off switch).
+	TrimInterval          time.Duration
+	TrimMinThresholdBytes uint64
+	TrimMaxThresholdBytes uint64
+	TrimMinFileCount      int
+	TrimThresholdRatio    float64
+	TrimTempDir           string
 }
 
 func DefaultConfig() Config {
@@ -48,5 +56,11 @@ func DefaultConfig() Config {
 		SmallFilePow2:            6,
 		ChdTargetP:               0.2,
 		ZramSnapshotDir:          "~/.bsos_zram_snapshots",
+		TrimInterval:             15 * time.Minute,
+		TrimMinThresholdBytes:    4096,
+		TrimMaxThresholdBytes:    256 << 20,
+		TrimMinFileCount:         100,
+		TrimThresholdRatio:       0.20,
+		TrimTempDir:              "",
 	}
 }

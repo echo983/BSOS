@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"bsos/internal/blk"
 )
@@ -15,6 +16,24 @@ var (
 	ErrConflict = errors.New("conflict")
 	ErrNotFound = errors.New("not found")
 )
+
+type trimStatus struct {
+	DiskID           string    `json:"disk_id"`
+	DevicePath       string    `json:"device_path"`
+	PackedEntries    int       `json:"packed_entries"`
+	LastCheckAt      time.Time `json:"last_check_at,omitempty"`
+	LastRunAt        time.Time `json:"last_run_at,omitempty"`
+	LastSuccessAt    time.Time `json:"last_success_at,omitempty"`
+	LastTrigger      bool      `json:"last_trigger"`
+	LastThreshold    uint64    `json:"last_threshold_bytes"`
+	LastTotalFiles   int       `json:"last_total_files"`
+	LastSmallFiles   int       `json:"last_small_files"`
+	LastPackedFiles  int       `json:"last_packed_files"`
+	LastContainerFID string    `json:"last_container_fid,omitempty"`
+	LastTableFID     string    `json:"last_table_fid,omitempty"`
+	LastBackupPath   string    `json:"last_backup_path,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+}
 
 // aliasJumpCode is the fixed jump-indicator marker BSOS writes for a
 // client-driven alias registration (docs/DESIGN.md §3.4). Its specific
@@ -49,8 +68,14 @@ type DeviceState struct {
 
 	indexMu   sync.RWMutex
 	confirmed map[uint64]objectRef
+	packed    map[uint64]packedRecord
 	indexEnd  uint64
 	indexErr  error
+
+	trimMu    sync.Mutex
+	trimState trimStatus
+	failPoint string
+	cfg       Config
 
 	ioSem chan struct{} // bounded-concurrency dispatcher, §3.12: one per disk
 }
@@ -80,7 +105,7 @@ func OpenDevice(devicePath string, diskID uint64, ioConcurrency int) (*DeviceSta
 		f.Close()
 		return nil, fmt.Errorf("invalid device header, identity or size: %v", err)
 	}
-	confirmed, intervals, indexEnd, err := replayIndex(f, diskBytes)
+	confirmed, packed, intervals, indexEnd, err := replayIndex(f, diskBytes)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("scan intervals %s: %w", devicePath, err)
@@ -95,7 +120,9 @@ func OpenDevice(devicePath string, diskID uint64, ioConcurrency int) (*DeviceSta
 		diskBytes:  diskBytes,
 		intervals:  intervals,
 		confirmed:  confirmed,
+		packed:     packed,
 		indexEnd:   indexEnd,
+		cfg:        DefaultConfig(),
 		ioSem:      make(chan struct{}, ioConcurrency),
 	}, nil
 }
@@ -246,9 +273,9 @@ func (pw *PreparedWrite) Commit(aliasFor uint64) error {
 		return fmt.Errorf("commit index: %w", err)
 	}
 	s.indexMu.Lock()
-	s.confirmed[pw.fid] = objectRef{pw.fid, pw.size, pw.size}
+	s.confirmed[pw.fid] = objectRef{fid: pw.fid, storedSize: pw.size, size: pw.size}
 	if aliasFor != 0 {
-		s.confirmed[aliasFor] = objectRef{pw.fid, pw.size, pw.size - 1}
+		s.confirmed[aliasFor] = objectRef{fid: pw.fid, storedSize: pw.size, size: pw.size - 1}
 	}
 	s.indexMu.Unlock()
 	s.indexEnd += uint64(len(entry))
@@ -291,7 +318,7 @@ func (s *DeviceState) readRange(ctx context.Context, ref objectRef, start, end u
 		return nil, err
 	}
 	buf := make([]byte, end-start)
-	n, err := s.file.ReadAt(buf, int64(addr+start))
+	n, err := s.file.ReadAt(buf, int64(addr+ref.offset+start))
 	if err != nil {
 		return nil, fmt.Errorf("read payload: %w", err)
 	}
