@@ -138,9 +138,16 @@ explanation below the steps.
    If either check fails, release whatever was already reserved in this
    step and return conflict immediately — disk selection never runs.
    Otherwise both are marked pending pool-wide and the lock is released.
-   This lock is held only for an in-memory set lookup/insert, never for
-   any I/O, and is never held at the same time as a per-disk lock (no
-   nesting, no deadlock risk).
+   This lock is held for an in-memory set lookup/insert plus the
+   confirmed-existence check, fanned out as concurrent in-process calls
+   against every disk's own RAM-resident index (same mechanism as
+   `readAny`/`findExistingSize`, §3.11) — real work, not literally
+   nothing, but neither network nor disk I/O, so still fast; never held
+   at the same time as a per-disk lock (no nesting, no deadlock risk).
+   Because this is now the single pool-wide choke point for every write,
+   the fan-out itself needs its own short, bounded timeout, separate from
+   the write-level stall timeout below — one unresponsive disk must not
+   be able to freeze header processing for the whole pool.
 1. Pick the target disk (§3.11's existing best-fit-by-CH_d policy, using
    `total_size`), then take *that disk's* lock just long enough to check
    *and reserve* the target data-grid extent, against confirmed occupancy
