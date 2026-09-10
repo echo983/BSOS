@@ -1,45 +1,73 @@
 # Open questions
 
-Surfaced by an explicit design-closure review. Resolve into `docs/DESIGN.md`
-when decided.
+## Resolved (2026-09-10)
 
-## Gaps in the storage engine's own spec (block implementation)
+- `total_size` vs. actual streamed byte count → abort on any mismatch,
+  never silently pad/truncate. See `docs/DESIGN.md` §3.3.
+- Trim scheduling/locking fairness under sustained write load → accepted
+  as an occasional operational risk, not engineered around. See §3.8.
+- Health RPC → added, same shape as NBSS's. See §4.
 
-- **`total_size` vs. actual streamed byte count.** §3.3 has the server
-  compute the target extent from `PutHeader.total_size` before any data
-  arrives, then stream bytes in. Nothing says what happens if the stream
-  ends short, or carries more bytes than declared. Silently zero-padding
-  a shortfall would violate `fid = hash(content)` (§3.1) even for an
-  honest client that hit a transient error — this isn't a content-
-  validation question (§3.6), it's stream-length accounting needed for
-  the extent model to be correct at all. Leaning towards: any mismatch
-  aborts the write with an error, no silent pad/truncate.
-- **No guaranteed scheduling/locking fairness for Trim under sustained
-  write load.** §3.8 says Trim must run continuously because it's the
-  only relief valve for index-stream exhaustion (no DELETE/GC), but
-  nothing says how it's guaranteed to actually get to run if writes keep
-  contending for the same per-disk lock. In NBSS this was a soft
-  degradation (more fragmentation); in BSOS it's a hard failure mode
-  (index fills up, no recourse) if it stays unresolved.
-- **No Health/liveness RPC decided either way.** Purely operational
-  infrastructure (something for a load balancer/monitor to poll), not
-  discussed yet, not deliberately excluded like Probe/Pan/Delete were.
+## Companion systems: found, not missing — but need porting
 
-## Companion systems this design assumes but hasn't started
+A design-closure review had flagged "no manifest format" and "no shared
+client SDK" as unstarted. Both already exist, in two real client
+repositories built on NBSS:
 
-- **No manifest format for client-side chunking of large objects (§3.5).**
-  The storage engine correctly doesn't need to know about this, but if
-  more than one internal tool needs to read/write the same chunked
-  objects, they need a shared, designed format — doesn't exist yet, not
-  even "is the manifest itself a plain object and how is its fid derived."
-- **No shared client SDK yet.** Several decisions (§3.4's recommended
-  jump-target algorithm, §3.9's readback-based retry safety, §3.5's
-  chunking) are only clean if there's exactly one shared client library
-  everyone uses, per the trust-model discussion. That library doesn't
-  exist — no language, no repo, nothing built.
-- **No higher-layer pool-lifecycle/retention system.** §3.7 explicitly
-  delegates space reclaim ("拣选迁移") to a layer this system doesn't
-  own. Without it, a BSOS pool that fills up has no path forward except
-  wholesale retirement/reinit. This is a deliberate scope boundary, not
-  an oversight, but it means BSOS alone is not a complete, usable
-  solution — worth remembering before treating this design as "done."
+- https://github.com/echo983/notFinder (Windows, WinFSP)
+- https://github.com/echo983/notFinderLinux (Linux, FUSE3)
+
+Both vendor a shared `nbss-core` Rust crate that is exactly the "one
+shared client library" the trust model discussion assumed. It already
+implements:
+
+- A typed, versioned chunk manifest (`nbss-core/src/manifest.rs`, magic
+  `S0L0UN0^`): header with `chunk_pow2` + `chunk_count` + `tail_size`,
+  entries of `(fid, is_manifest)` — manifests can nest, not just a flat
+  chunk list.
+- A "PVLog" layer (`pvlog.rs`/`pvlog_writer.rs`/`pvlog_replay.rs`) that
+  builds versioning, rollback, and zero-copy cross-directory moves as a
+  client-side log over NBSS's immutable blobs — i.e., this product
+  already treats NBSS as a dumb content-addressed store and puts all the
+  smart layering on the client side, the same split BSOS is built around.
+
+**But it's built against NBSS's current wire contract** (server-derived
+fid, HTTP+gRPC, `DeleteRequest`/`delete_object`) — none of it speaks
+BSOS's contract (client-declared fid, gRPC-only, header-first streaming
+Put, no Delete). Porting `nbss-core` (and whatever in both daemons calls
+it directly) to BSOS is real work across two production codebases, not a
+side effect of finishing this design.
+
+## New conflict found while reading them
+
+`nbss-core`'s only caller of NBSS's per-object `delete_object` is PVLog's
+own compaction routine (`fs_state.rs`, the function that consolidates
+many small log segments into one frame): it deletes the now-superseded
+segment and head objects after compaction succeeds. This is the client's
+own log-GC, analogous to what Trim does for BSOS's data grid — not
+deletion of user file content.
+
+Checked: the user-facing per-file/per-reality delete path
+(`notfinder-daemon`'s `soft_delete`/`archive`/`purge_reality`,
+`/api/v1/realities/{id}/files/delete`) never calls `delete_object` on a
+content fid anywhere in the tree — it's a namespace/PVLog-level
+unreference, already compatible with BSOS's no-DELETE model (§3.7) as
+designed.
+
+So the actual conflict is narrow: **PVLog's own log-compaction currently
+relies on deleting superseded internal segments**, and BSOS has no
+DELETE at all. Under BSOS, those superseded PVLog segments would become
+permanent garbage until whatever eventually retires/migrates the whole
+pool (§3.7's still-unbuilt higher layer) — a real behavior change from
+what this code does today, not yet decided whether that's acceptable or
+whether it changes anything about §3.7.
+
+## Still open
+
+- Whether PVLog's own segment garbage accumulating forever (previous
+  section) is acceptable, or whether it changes the §3.7 "no DELETE at
+  all, ever" decision for this one narrow internal case.
+- Porting plan/scope for `nbss-core` (both repos) from NBSS's current
+  contract to BSOS's.
+- Higher-layer pool-lifecycle/retention system (§3.7) — still doesn't
+  exist anywhere, still needed regardless of the above.

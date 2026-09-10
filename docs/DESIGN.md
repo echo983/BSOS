@@ -95,6 +95,16 @@ fully-materialized `[]byte`" to "accept a reader/stream and write chunk by
 chunk." The bytes that land on disk, and where, are unchanged — only the
 plumbing between the socket and `WriteAt` changes.
 
+**Declared vs. actual byte count.** If the stream ends before `total_size`
+bytes arrive, or carries more than `total_size` bytes, the server aborts
+the write with an error. It never silently zero-pads a shortfall or
+truncates an excess. This isn't content validation (§3.6) — the server
+still never looks at *what* the bytes are — but stream-length accounting
+the extent model needs to be correct at all: a silent pad on shortfall
+would leave stored bytes that don't match what the client hashed to get
+fid, breaking §3.1's invariant even for an honest client that hit a
+transient error.
+
 ### 3.4 Collision handling
 
 If the target slot is already occupied — by anything, including a prior
@@ -169,6 +179,14 @@ underlying data out of defragmentation while the alias stands; this is
 expected to be a minor cost since aliasing is an occasional
 collision-resolution path, not the common write path.
 
+**No scheduling/locking fairness guarantee for Trim under sustained write
+load, by decision.** Trim and ordinary reads/writes contend for the same
+per-disk lock; nothing guarantees Trim gets to run if writes keep winning
+that contention. If that ever starves Trim long enough for the index
+stream to fill, the system stops accepting writes on that disk. This is
+accepted as an occasional operational risk rather than engineered around
+— not worth the complexity at this system's scale and trust model (§1).
+
 ### 3.9 Retry-safety is a client concern, solved with an existing primitive
 
 Because the server never validates content, it cannot tell a harmless
@@ -231,7 +249,7 @@ HTTP and gRPC handlers for every operation) and maps naturally onto
 gRPC's native bidirectional/client streaming, which the write path (§3.3)
 depends on.
 
-**RPC surface: `Put`, `Get`, `Head`, `Bonnie`.** Settled by elimination
+**RPC surface: `Put`, `Get`, `Head`, `Bonnie`, `Health`.** Settled by elimination
 from NBSS's HTTP+gRPC surface:
 
 - **`Delete`**: dropped, per §3.7 (no DELETE/GC).
@@ -266,6 +284,9 @@ from NBSS's HTTP+gRPC surface:
   keeping up. Multi-disk aggregation reuses NBSS's existing
   `bonnieCHDPow2()` policy unchanged: max CH_d across writable non-zram
   disks, capped by `max_put_bytes`.
+- **`Health`**: kept, same shape as NBSS's. Operational infrastructure
+  (liveness/readiness for a load balancer or monitor to poll), not a data
+  operation — orthogonal to every trust-model/identity decision above.
 
 Draft proto shape:
 
@@ -313,6 +334,12 @@ message HeadResponse {
 message BonnieResponse {
   uint32 ch_d_pow2 = 1;  // largest object size placeable with the
                           // configured target probability, right now
+}
+
+message Empty {}
+
+message HealthResponse {
+  bool ok = 1;
 }
 ```
 

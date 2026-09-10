@@ -53,9 +53,14 @@ message BonnieResponse {
                           // configured target probability, right now
 }
 
+message HealthResponse {
+  bool ok = 1;
+}
+
 service BSOS {
   rpc Put(stream PutRequest) returns (PutResponse);
   rpc Get(GetRequest) returns (stream GetResponse);
   rpc Head(HeadRequest) returns (HeadResponse);
   rpc Bonnie(Empty) returns (BonnieResponse);
+  rpc Health(Empty) returns (HealthResponse);
 }
