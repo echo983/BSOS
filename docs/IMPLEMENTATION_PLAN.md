@@ -78,6 +78,10 @@ plan avoids debugging both at once.
    so it's the wrong thing to bolt on simultaneously with either.
 7. **Health and operational polish.** Timeouts, config surface,
    diagnostics.
+8. **Go client library.** Implements `docs/CLIENT_SPEC.md` in full
+   (§4 below): fid computation, streaming Put/Get/Head/Bonnie/Health,
+   jump-retry helper, readback-based retry-safety helper.
+9. **Basic CLI**, built on milestone 8's library.
 
 ## 3. Repo bootstrap approach
 
@@ -92,16 +96,32 @@ corresponding NBSS code rather than copy-pasted from it. `go.mod` and
 `buf.gen.yaml`-equivalent proto tooling are set up fresh, mirroring
 NBSS's own setup.
 
-## 4. Client SDK: minimal reference client only, in scope; full SDK is separate
+## 4. Client deliverables: behavior spec, Go library, basic CLI
 
-This phase builds a **minimal reference client** — just enough to
-compute fid, speak the streaming Put protocol correctly, and issue
-Get/Head/Bonnie/Health calls — sufficient to test the daemon end to end
-and serve as living example code. It is explicitly **not** a production
-client SDK (no manifest/chunking, no jump-retry helper, no
-retry-safety-readback wrapper). Those belong to a separate, later
-project once the daemon itself is proven; bundling them into this phase
-would slow down the part `docs/DESIGN.md` is actually about.
+Three deliverables, scoped by `docs/CLIENT_SPEC.md`:
+
+- **`docs/CLIENT_SPEC.md`** (written): the client-facing contract — fid
+  computation, the write protocol's binding requirements, collision/jump
+  handling, retry-safety, and how to interpret `Bonnie`. Authoritative on
+  what a client does; `docs/DESIGN.md` stays authoritative on why.
+- **Go library**: implements everything `CLIENT_SPEC.md` specifies — fid
+  computation, streaming `Put`/`Get`/`Head`/`Bonnie`/`Health`, the
+  jump-retry helper, the readback-based retry-safety helper. Permanently
+  excludes chunking/manifest support — not deferred, out of scope: BSOS
+  is infrastructure and has no concept of files, directories, or
+  multi-object logical structure, and neither does its client library.
+  That's an application-layer project's job, not this one's.
+- **Basic CLI** (`bsos put|get|head|bonnie|health`): a thin wrapper over
+  the Go library. `put` handles collisions by running the jump-retry
+  algorithm automatically (matching `nbss file write`'s existing
+  behavior) and prints the resulting fid; none of the commands know what
+  a directory or a multi-part file is — input/output is raw bytes in,
+  raw bytes out, one fid per object.
+
+Sequenced after the core daemon milestones below (5-7) — the library and
+CLI need a working `Put`/`Get` to test against — except writing
+`CLIENT_SPEC.md` itself, which has no such dependency and can happen any
+time.
 
 ## 5. `bsosd.toml` draft
 

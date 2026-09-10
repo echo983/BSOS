@@ -9,10 +9,11 @@ untrusted participants.
 ## Status
 
 Design is complete as of the `design-v0` tag — see `docs/DESIGN.md` for
-the full spec, `docs/OPEN_QUESTIONS.md` for what's still undecided
-(currently nothing), and `docs/NBSS_REUSE_PLAN.md` for what carries over
-from NBSS's codebase versus what needs real rework. Construction planning
-is underway: see `docs/IMPLEMENTATION_PLAN.md` for the test strategy,
+the full server-side spec, `docs/CLIENT_SPEC.md` for the client-facing
+contract, `docs/OPEN_QUESTIONS.md` for what's still undecided (currently
+nothing), and `docs/NBSS_REUSE_PLAN.md` for what carries over from
+NBSS's codebase versus what needs real rework. Construction planning is
+underway: see `docs/IMPLEMENTATION_PLAN.md` for the test strategy,
 milestones, repo bootstrap approach, and config schema. No code has
 landed yet.
 
@@ -22,8 +23,11 @@ NBSS is a private reference implementation studied for its physical layout
 and scheduling ideas (disk layout, slot addressing, collision handling,
 in-memory index rebuild, elevator-style I/O queues, background
 defragmentation). BSOS reuses that physical layer essentially unchanged.
-No NBSS source is vendored into this repository; BSOS is a fresh
-implementation that happens to target a compatible on-disk byte format.
+Per `docs/IMPLEMENTATION_PLAN.md`, the pieces of NBSS's codebase that
+carry over unchanged (disk layout, addressing, index encoding, CLI
+backup/restore/scrub tooling) will be copied in with provenance recorded
+once construction starts; everything else is a fresh implementation
+targeting a compatible on-disk byte format.
 
 ## Trust model
 
