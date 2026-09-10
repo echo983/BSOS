@@ -8,12 +8,14 @@ untrusted participants.
 
 ## Status
 
-Design is complete at `design-v0`. Implementation milestones 1–5 are
-complete; milestone 6 (One-hop alias) is next.
+Design is complete at `design-v0`. Implementation milestones 1–6 are
+complete; milestone 7 (Health and operational polish) is next.
 Continuous mandatory Trim defragmentation, container packing, crash-safety
-failpoints, and Bonnie RPC have passed all unit and race tests.
+failpoints, Bonnie RPC, and full one-hop jump alias protocol have passed
+all unit and race tests.
 Routing/recovery tests, real two-disk verification, and real zram host
-acceptance gate on Debian 13 VPS have passed. See [milestone 4 validation](docs/MILESTONE_4_VALIDATION_2026-09-10.md).
+acceptance gate on Debian 13 VPS have passed. See [milestone 4 validation](docs/MILESTONE_4_VALIDATION_2026-09-10.md)
+and [milestone 5 validation](docs/MILESTONE_5_VALIDATION_2026-09-10.md).
 The tree also includes the foundation repairs described in
 [the foundation validation report](docs/FOUNDATION_VALIDATION_2026-09-10.md).
 See `docs/IMPLEMENTATION_PLAN.md` for milestone scope and remaining work,

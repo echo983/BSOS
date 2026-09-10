@@ -136,10 +136,12 @@ plan avoids debugging both at once.
    restart replay and crash-safety failpoints. Jump-alias targets, containers, and packed
    tables are strictly excluded from defragmentation. Wired up `Bonnie` RPC with
    `bonnieCHDPow2()` policy aggregating non-zram writable disks and capping by `max_put_bytes`.
-6. **One-hop alias (`alias_for`).** Deliberately its own milestone after
-   the core write path and Trim are both stable — it touches both the
-   pool-wide gate (two fids, not one) and Trim's jump-target exclusion,
-   so it's the wrong thing to bolt on simultaneously with either.
+6. **One-hop alias (`alias_for`) — done.**
+   Full client-driven one-hop jump pointer protocol validated end-to-end:
+   pool-wide two-FID atomic gate reservation, same-disk co-locality guarantees,
+   adjacent index pair publication, logical content un-padding on read/range-read,
+   strict prohibition of chained aliases or overwriting existing objects,
+   Trim candidate exclusion, crash/restart replay, and client jump-retry simulation.
 7. **Health and operational polish.** Timeouts, config surface,
    diagnostics.
 8. **Go client library.** Implements `docs/CLIENT_SPEC.md` in full
