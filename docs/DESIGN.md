@@ -105,6 +105,59 @@ would leave stored bytes that don't match what the client hashed to get
 fid, breaking §3.1's invariant even for an honest client that hit a
 transient error.
 
+**Concurrency model: streaming writes are not atomic, and NBSS's current
+locking/queueing doesn't assume that.** NBSS holds a per-disk lock for
+the full duration of a write (`DeviceState.mu`), because a write is
+currently a single fast `WriteAt` over already-buffered data. Under BSOS
+a write can take seconds to minutes (network-bound), so holding that lock
+for the whole transfer would serialize all other reads/writes to the disk
+behind whichever stream happens to be in flight — an unacceptable
+throughput regression, not a minor inefficiency.
+
+The fix is a two-phase commit inside the write path, not a lock-scope
+tweak:
+
+1. On receiving `PutHeader`, take the per-disk lock just long enough to
+   check the target extent against both confirmed occupancy *and* other
+   in-flight reservations, then insert a new **pending** reservation for
+   it, then release the lock. This is the only place a conflict (§3.4)
+   can be detected, and it must happen before any bytes are accepted.
+2. Stream chunks into the reserved extent without holding the lock,
+   accumulating them into slot-aligned pieces before each `WriteAt` (see
+   below).
+3. On a clean finish with a byte count matching `total_size`, take the
+   lock again just long enough to write the index entry (and the
+   `alias_for` pair, if set) and flip the reservation to confirmed.
+4. On any abort (byte-count mismatch, stream error, client
+   cancellation, timeout waiting for the first byte after the header),
+   release the reservation without ever writing an index entry — the
+   slot is free again, exactly as if the attempt never happened.
+
+This pending-reservation state does not exist in NBSS today; its
+occupancy tracking (`intervals`) only ever represents confirmed writes,
+because nothing there is ever mid-flight. Both `computeCHD` (Bonnie's
+source, §4) and ordinary conflict detection must read pending
+reservations too, or they'll double-book space that's already spoken for
+by an in-progress stream.
+
+The per-disk write priority queue (§2, elevator/SSTF-ordered by slot
+index) has the same problem one level down: it currently queues whole
+write operations, which made sense when an operation was one fast
+`WriteAt`. It can't usefully reorder something that's still arriving
+from the network. The fix is to lower its granularity: the queued unit
+becomes one slot-aligned chunk flush (step 2 above), not one whole
+object — the reservation from step 1 is what prevents two different
+objects' chunks from landing on overlapping slots, and the queue keeps
+doing its normal job of ordering those chunk-level disk writes by
+address.
+
+Implementation detail this implies: chunks arriving from the gRPC stream
+won't be slot-aligned on their own (their size is whatever the client's
+network buffering happens to produce), so the write path needs a small
+internal re-alignment buffer per in-flight write that accumulates
+network chunks and flushes exactly-aligned pieces to disk, rather than
+passing each inbound gRPC message straight to `WriteAt`.
+
 ### 3.4 Collision handling
 
 If the target slot is already occupied — by anything, including a prior

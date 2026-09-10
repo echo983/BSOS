@@ -10,8 +10,9 @@ untrusted participants.
 
 Design consensus only (v0) — no implementation yet. This repository
 currently holds the agreed design, not code. See `docs/DESIGN.md` for the
-full spec as agreed so far, and `docs/OPEN_QUESTIONS.md` for what's still
-undecided.
+full spec as agreed so far, `docs/OPEN_QUESTIONS.md` for what's still
+undecided, and `docs/NBSS_REUSE_PLAN.md` for what carries over from NBSS's
+codebase versus what needs real rework.
 
 ## Relationship to NBSS
 
