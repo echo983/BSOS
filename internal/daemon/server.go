@@ -15,27 +15,31 @@ import (
 
 	"bsos/internal/daemon/bsospb"
 	"bsos/internal/pan"
+	"bsos/internal/zram"
 )
 
-// Server implements docs/DESIGN.md §3.3's full two-phase write path:
-// a pool-wide fid gate (step 0) followed by a per-disk extent
-// reservation (step 1, DeviceState.PrepareWrite), an unlocked streaming
-// write (step 2), and a commit or abort (steps 3/4). Milestone 4 (multi-
-// disk pooling) is the only piece not yet here — this Server always
-// targets a single disk, but the gate itself is already pool-scoped so
-// multi-disk plugs in without redoing this milestone's work.
+// Server implements docs/DESIGN.md §3.3's full two-phase write path
+// across a multi-disk pool (§3.11): a pool-wide fid gate (step 0,
+// spanning every disk) followed by best-fit disk selection and a
+// per-disk extent reservation (step 1), an unlocked streaming write
+// (step 2), and a commit or abort (steps 3/4).
 type Server struct {
 	bsospb.UnimplementedBSOSServer
 
-	disk   *DeviceState
-	gate   *poolGate
-	maxPut uint64
+	disks          []*DeviceState
+	gate           *poolGate
+	maxPut         uint64
+	smallFileBytes uint64
+	chdTargetP     float64
 
 	stallTimeout    time.Duration
 	gateFanoutLimit time.Duration
 }
 
 func NewServer(cfg Config) (*Server, error) {
+	if cfg.ReservationStallTimeout <= 0 || cfg.PoolGateFanoutTimeout <= 0 {
+		return nil, fmt.Errorf("timeouts must be positive")
+	}
 	panFile, err := pan.Read(cfg.PanPath)
 	if err != nil {
 		return nil, fmt.Errorf("read pan: %w", err)
@@ -43,28 +47,76 @@ func NewServer(cfg Config) (*Server, error) {
 	if len(panFile.Devices) == 0 {
 		return nil, fmt.Errorf("no devices in %s", cfg.PanPath)
 	}
-	// Single-disk until milestone 4 brings in multidisk.go's best-fit
-	// pool routing; the first device in pan.json is the only target.
-	dev := panFile.Devices[0]
-	diskID, err := pan.ParseDiskID(dev.DiskID)
-	if err != nil {
-		return nil, fmt.Errorf("parse disk id: %w", err)
+
+	var disks []*DeviceState
+	opened := false
+	defer func() {
+		if !opened {
+			for _, disk := range disks {
+				_ = disk.Close()
+			}
+		}
+	}()
+	for _, dev := range panFile.Devices {
+		if zram.IsZramDevicePath(dev.DevicePath) && cfg.ZramSnapshotDir != "" {
+			// docs/DESIGN.md §3.13: load this zram device's snapshot
+			// before opening it, folding NBSS's separate manual
+			// `zram load` + `blk find` steps into normal startup.
+			// Best-effort: a device that can't be loaded (no snapshot
+			// yet, or genuinely absent in this environment) is skipped,
+			// not fatal — the pool just runs without that tier until an
+			// operator investigates.
+			if _, err := zram.EnsureLoaded(dev.DevicePath, dev.DiskID, cfg.ZramSnapshotDir); err != nil {
+				log.Printf("bsosd: zram auto-load for %s: %v (skipping this device)", dev.DevicePath, err)
+				continue
+			}
+		}
+		diskID, err := pan.ParseDiskID(dev.DiskID)
+		if err != nil {
+			return nil, fmt.Errorf("parse disk id for %s: %w", dev.DevicePath, err)
+		}
+		disk, err := OpenDevice(dev.DevicePath, diskID, cfg.WriteDispatchConcurrency)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", dev.DevicePath, err)
+		}
+		for _, previous := range disks {
+			if previous.diskID == disk.diskID {
+				disk.Close()
+				return nil, fmt.Errorf("duplicate disk id %d", disk.diskID)
+			}
+			for fid := range disk.confirmed {
+				if _, exists := previous.confirmed[fid]; exists {
+					disk.Close()
+					return nil, fmt.Errorf("fid %d registered on multiple disks", fid)
+				}
+			}
+		}
+		disks = append(disks, disk)
 	}
-	disk, err := OpenDevice(dev.DevicePath, diskID, cfg.WriteDispatchConcurrency)
-	if err != nil {
-		return nil, err
+	if len(disks) == 0 {
+		return nil, fmt.Errorf("no usable devices after opening %s", cfg.PanPath)
 	}
+
+	opened = true
 	return &Server{
-		disk:            disk,
+		disks:           disks,
 		gate:            newPoolGate(),
 		maxPut:          cfg.MaxPutBytes,
+		smallFileBytes:  smallFileBytes(cfg.SmallFilePow2),
+		chdTargetP:      cfg.ChdTargetP,
 		stallTimeout:    cfg.ReservationStallTimeout,
 		gateFanoutLimit: cfg.PoolGateFanoutTimeout,
 	}, nil
 }
 
 func (s *Server) Close() error {
-	return s.disk.Close()
+	var firstErr error
+	for _, disk := range s.disks {
+		if err := disk.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *Server) Serve(listenAddr string) error {
@@ -74,15 +126,14 @@ func (s *Server) Serve(listenAddr string) error {
 	}
 	grpcServer := grpc.NewServer()
 	bsospb.RegisterBSOSServer(grpcServer, s)
-	log.Printf("bsosd: listening on %s (disk=%s)", listenAddr, s.disk.devicePath)
+	log.Printf("bsosd: listening on %s (%d disk(s))", listenAddr, len(s.disks))
 	return grpcServer.Serve(lis)
 }
 
 // confirmed is the pool-wide gate's confirmed-existence check
-// (docs/DESIGN.md §3.3 step 0): today a single disk, degenerately
-// "broadcast to everyone" until milestone 4; the timeout bound applies
-// regardless of pool size, so it's already in place for when the fan-out
-// becomes real.
+// (docs/DESIGN.md §3.3 step 0), bounded by its own fan-out timeout
+// separate from the per-write stall timeout — one unresponsive disk
+// must not freeze the whole pool's write path.
 func (s *Server) confirmed(fid uint64) (bool, error) {
 	type result struct {
 		found bool
@@ -90,7 +141,7 @@ func (s *Server) confirmed(fid uint64) (bool, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		found, err := s.disk.Confirmed(fid)
+		found, err := s.confirmedAnywhere(fid)
 		ch <- result{found, err}
 	}()
 	select {
@@ -111,6 +162,9 @@ func (s *Server) Put(stream grpc.ClientStreamingServer[bsospb.PutRequest, bsospb
 		return status.Error(codes.InvalidArgument, "first message must be PutHeader")
 	}
 	fid, totalSize, aliasFor := header.GetFid(), header.GetTotalSize(), header.GetAliasFor()
+	if totalSize == 0 || aliasFor != 0 && (aliasFor == fid || totalSize < 2) {
+		return status.Error(codes.InvalidArgument, "invalid size or alias")
+	}
 	if s.maxPut > 0 && totalSize > s.maxPut {
 		return status.Error(codes.InvalidArgument, "payload exceeds max_put")
 	}
@@ -122,15 +176,14 @@ func (s *Server) Put(stream grpc.ClientStreamingServer[bsospb.PutRequest, bsospb
 		}
 		return status.Errorf(codes.Internal, "pool gate: %v", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			s.gate.release(fid, aliasFor)
-		}
-	}()
+	defer s.gate.release(fid, aliasFor)
 
-	// Step 1: disk selection (single-disk today) + extent reservation.
-	pw, err := s.disk.PrepareWrite(fid, totalSize)
+	// Step 1: best-fit disk selection (§3.11), then extent reservation.
+	disk, err := s.selectDiskForWrite(totalSize)
+	if err != nil {
+		return status.Errorf(codes.ResourceExhausted, "select disk: %v", err)
+	}
+	pw, err := disk.PrepareWrite(fid, totalSize)
 	if err != nil {
 		if errors.Is(err, ErrConflict) {
 			return status.Error(codes.AlreadyExists, "extent already reserved")
@@ -140,30 +193,61 @@ func (s *Server) Put(stream grpc.ClientStreamingServer[bsospb.PutRequest, bsospb
 
 	// Step 2: stream chunks in, unlocked, with a stall timeout.
 	r := &stallingChunkReader{stream: stream, timeout: s.stallTimeout}
-	writeErr := pw.WriteFrom(r)
+	writeErr := pw.WriteFromContext(stream.Context(), r)
 	if writeErr != nil {
 		pw.Abort() // Step 4.
 		return status.Errorf(codes.Internal, "put: %v", writeErr)
 	}
 
-	// Step 3: commit.
+	// Step 3: commit. alias_for's jump-indicator pair must land on the
+	// same disk as fid's real entry (docs/DESIGN.md §3.11) — Commit
+	// writes both under pw's disk, which is exactly the one selected
+	// above, so this is automatic, not something to coordinate further.
+	if err := stream.Context().Err(); err != nil {
+		pw.Abort()
+		return status.FromContextError(err).Err()
+	}
 	if err := pw.Commit(aliasFor); err != nil {
 		pw.Abort()
 		return status.Errorf(codes.Internal, "commit: %v", err)
 	}
-	committed = true
 	return stream.SendAndClose(&bsospb.PutResponse{})
 }
 
 func (s *Server) Get(req *bsospb.GetRequest, stream grpc.ServerStreamingServer[bsospb.GetResponse]) error {
-	data, size, err := s.disk.Get(req.GetFid())
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return status.Error(codes.NotFound, "not found")
-		}
-		return status.Errorf(codes.Internal, "get: %v", err)
+	type found struct {
+		disk *DeviceState
+		ref  objectRef
+		err  error
 	}
-
+	results := make(chan found, len(s.disks))
+	for _, d := range s.disks {
+		go func(d *DeviceState) { ref, err := d.lookup(req.GetFid()); results <- found{d, ref, err} }(d)
+	}
+	var selected found
+	var firstErr error
+	for range s.disks {
+		select {
+		case <-stream.Context().Done():
+			return status.FromContextError(stream.Context().Err()).Err()
+		case r := <-results:
+			if r.err == nil {
+				selected = r
+			} else if !errors.Is(r.err, ErrNotFound) && firstErr == nil {
+				firstErr = r.err
+			}
+		}
+		if selected.disk != nil {
+			break
+		}
+	}
+	if selected.disk == nil {
+		if firstErr != nil {
+			return status.Errorf(codes.Internal, "get: %v", firstErr)
+		}
+		return status.Error(codes.NotFound, "not found")
+	}
+	size := selected.ref.size
 	start, end := uint64(0), size
 	if req.GetHasRange() {
 		start, end = req.GetRangeStart(), req.GetRangeEnd()
@@ -173,22 +257,27 @@ func (s *Server) Get(req *bsospb.GetRequest, stream grpc.ServerStreamingServer[b
 		if start > end {
 			return status.Error(codes.InvalidArgument, "invalid range")
 		}
-		data = data[start:end]
 	}
-
-	// Milestone 2/3 simplification, not a correctness gap: sends the
-	// whole (possibly range-limited) payload as one message rather than
-	// chunking large objects across multiple GetResponse messages.
-	return stream.Send(&bsospb.GetResponse{
-		Size:       size,
-		RangeStart: start,
-		RangeEnd:   end,
-		Data:       data,
-	})
+	// Bound both disk-read memory and each wire message. Range metadata describes
+	// this message's byte interval within the logical object.
+	for pos := start; ; {
+		next := min(pos+uint64(1<<20), end)
+		data, err := selected.disk.readRange(stream.Context(), selected.ref, pos, next)
+		if err != nil {
+			return status.Errorf(codes.Internal, "get: %v", err)
+		}
+		if err := stream.Send(&bsospb.GetResponse{Size: size, RangeStart: pos, RangeEnd: next, Data: data}); err != nil {
+			return err
+		}
+		if next == end {
+			return nil
+		}
+		pos = next
+	}
 }
 
 func (s *Server) Head(_ context.Context, req *bsospb.HeadRequest) (*bsospb.HeadResponse, error) {
-	size, err := s.disk.Head(req.GetFid())
+	size, err := s.headAny(req.GetFid())
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "not found")
@@ -199,7 +288,13 @@ func (s *Server) Head(_ context.Context, req *bsospb.HeadRequest) (*bsospb.HeadR
 }
 
 func (s *Server) Health(_ context.Context, _ *bsospb.Empty) (*bsospb.HealthResponse, error) {
-	return &bsospb.HealthResponse{Ok: true}, nil
+	healthy := len(s.disks) > 0
+	for _, d := range s.disks {
+		d.indexMu.RLock()
+		healthy = healthy && d.indexErr == nil
+		d.indexMu.RUnlock()
+	}
+	return &bsospb.HealthResponse{Ok: healthy}, nil
 }
 
 // stallingChunkReader adapts a Put client-stream into an io.Reader,
@@ -208,22 +303,32 @@ func (s *Server) Health(_ context.Context, _ *bsospb.Empty) (*bsospb.HealthRespo
 // within the configured window, Read returns an error instead of
 // blocking forever on a client that went silent mid-stream.
 type stallingChunkReader struct {
-	stream  grpc.ClientStreamingServer[bsospb.PutRequest, bsospb.PutResponse]
-	timeout time.Duration
-	buf     []byte
+	stream   grpc.ClientStreamingServer[bsospb.PutRequest, bsospb.PutResponse]
+	timeout  time.Duration
+	buf      []byte
+	deadline time.Time
 }
 
 func (r *stallingChunkReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.deadline.IsZero() {
+		r.deadline = time.Now().Add(r.timeout)
+	}
 	for len(r.buf) == 0 {
 		req, err := r.recv()
 		if err != nil {
 			return 0, err
 		}
-		chunk := req.GetChunk()
-		if chunk == nil {
+		msg, ok := req.Msg.(*bsospb.PutRequest_Chunk)
+		if !ok {
 			return 0, fmt.Errorf("expected a chunk message, got another header")
 		}
-		r.buf = chunk
+		r.buf = msg.Chunk
+		if len(r.buf) > 0 {
+			r.deadline = time.Now().Add(r.timeout)
+		}
 	}
 	n := copy(p, r.buf)
 	r.buf = r.buf[n:]
@@ -231,6 +336,9 @@ func (r *stallingChunkReader) Read(p []byte) (int, error) {
 }
 
 func (r *stallingChunkReader) recv() (*bsospb.PutRequest, error) {
+	if time.Until(r.deadline) <= 0 {
+		return nil, fmt.Errorf("stall timeout: no forward progress within %s", r.timeout)
+	}
 	type result struct {
 		req *bsospb.PutRequest
 		err error
@@ -240,10 +348,14 @@ func (r *stallingChunkReader) recv() (*bsospb.PutRequest, error) {
 		req, err := r.stream.Recv()
 		ch <- result{req, err}
 	}()
+	timer := time.NewTimer(time.Until(r.deadline))
+	defer timer.Stop()
 	select {
+	case <-r.stream.Context().Done():
+		return nil, r.stream.Context().Err()
 	case res := <-ch:
 		return res.req, res.err
-	case <-time.After(r.timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("stall timeout: no forward progress within %s", r.timeout)
 	}
 }

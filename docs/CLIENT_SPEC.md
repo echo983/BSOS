@@ -118,3 +118,18 @@ scope boundary above).
 - `ResourceExhausted` or similar: the server's own bounded-concurrency
   dispatcher (`docs/DESIGN.md` §3.12) or a reservation-related timeout
   rejected the attempt — safe to retry the whole `Put` from scratch.
+
+## Current transport details (2026-09-10)
+
+Get responses carry at most 1 MiB of payload per message. Concatenate their
+`data` fields in order; `size` is the complete logical object size, and
+`range_start`/`range_end` describe each response's half-open byte interval.
+For an empty requested range, the server sends one empty response with the
+range metadata. An omitted range reads the complete object. With a range,
+`range_end = 0` means object end; ends beyond the object are clamped, and
+starts beyond the resulting end are rejected.
+
+The current direct/alias storage profile requires nonempty objects;
+`total_size = 0`, a self-alias, and an alias payload shorter than two bytes
+are rejected before reservation. A write response failure after commit
+leaves the object confirmed: use the existing readback retry-safety rule.

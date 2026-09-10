@@ -24,6 +24,17 @@ type Config struct {
 	// docs/DESIGN.md §3.12: per-disk bounded-concurrency dispatcher cap
 	// (no sorting, no read/write priority — just a resource-use bound).
 	WriteDispatchConcurrency int
+
+	// docs/DESIGN.md §3.11: small-file threshold for zram preference,
+	// 4KB * 2^SmallFilePow2, same convention as NBSS.
+	SmallFilePow2 int
+
+	// docs/DESIGN.md §4: CH_d target success probability.
+	ChdTargetP float64
+
+	// docs/DESIGN.md §3.13: where zram snapshots are flushed to and
+	// auto-loaded from at startup.
+	ZramSnapshotDir string
 }
 
 func DefaultConfig() Config {
@@ -34,5 +45,8 @@ func DefaultConfig() Config {
 		ReservationStallTimeout:  30 * time.Second,
 		PoolGateFanoutTimeout:    2 * time.Second,
 		WriteDispatchConcurrency: 64,
+		SmallFilePow2:            6,
+		ChdTargetP:               0.2,
+		ZramSnapshotDir:          "",
 	}
 }

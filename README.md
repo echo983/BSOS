@@ -8,14 +8,14 @@ untrusted participants.
 
 ## Status
 
-Design is complete as of the `design-v0` tag — see `docs/DESIGN.md` for
-the full server-side spec, `docs/CLIENT_SPEC.md` for the client-facing
-contract, `docs/OPEN_QUESTIONS.md` for what's still undecided (currently
-nothing), and `docs/NBSS_REUSE_PLAN.md` for what carries over from
-NBSS's codebase versus what needs real rework. Construction planning is
-underway: see `docs/IMPLEMENTATION_PLAN.md` for the test strategy,
-milestones, repo bootstrap approach, and config schema. No code has
-landed yet.
+Design is complete at `design-v0`. Implementation milestones 1–3 are
+committed; milestone 4 (multi-disk pooling and zram startup) is in progress.
+The working tree also includes the foundation repairs described in
+[the foundation validation report](docs/FOUNDATION_VALIDATION_2026-09-10.md).
+See `docs/IMPLEMENTATION_PLAN.md` for milestone scope and remaining work,
+`docs/DESIGN.md` for server semantics, and `docs/CLIENT_SPEC.md` for the
+client-facing contract. Passing the default tests does not yet constitute
+completion of the zram or physical-device acceptance gates.
 
 ## Relationship to NBSS
 
@@ -25,8 +25,8 @@ in-memory index rebuild, elevator-style I/O queues, background
 defragmentation). BSOS reuses that physical layer essentially unchanged.
 Per `docs/IMPLEMENTATION_PLAN.md`, the pieces of NBSS's codebase that
 carry over unchanged (disk layout, addressing, index encoding, CLI
-backup/restore/scrub tooling) will be copied in with provenance recorded
-once construction starts; everything else is a fresh implementation
+backup/restore/scrub tooling) are being copied in with provenance recorded
+in `THIRD_PARTY_ORIGIN.md`; everything else is a fresh implementation
 targeting a compatible on-disk byte format.
 
 ## Trust model

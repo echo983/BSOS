@@ -8,6 +8,8 @@ package daemon
 
 import (
 	"bytes"
+	"context"
+	"encoding/binary"
 	"io"
 	"os"
 	"sync"
@@ -21,9 +23,10 @@ import (
 )
 
 // newTestDisk creates a sparse temp file large enough to have a real
-// data grid, with no NBSS header needed — DeviceState/blk.AddrForFID
-// only care about the byte size and the (initially empty) index stream.
-func newTestDisk(t *testing.T) *DeviceState {
+// data grid and a valid NBSS v2 header.
+func newTestDisk(t *testing.T) *DeviceState { return newTestDiskID(t, 1) }
+
+func newTestDiskID(t *testing.T, id uint64) *DeviceState {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "bsos-test-disk-*")
 	if err != nil {
@@ -33,9 +36,16 @@ func newTestDisk(t *testing.T) *DeviceState {
 	if err := f.Truncate(size); err != nil {
 		t.Fatal(err)
 	}
+	header := make([]byte, blk.HeaderBytes)
+	copy(header, "NBSS")
+	binary.LittleEndian.PutUint16(header[4:6], blk.FormatVersion)
+	binary.LittleEndian.PutUint64(header[8:16], id)
+	if _, err := f.WriteAt(header, 0); err != nil {
+		t.Fatal(err)
+	}
 	f.Close()
 
-	disk, err := OpenDevice(f.Name(), 1, 64)
+	disk, err := OpenDevice(f.Name(), id, 64)
 	if err != nil {
 		t.Fatalf("OpenDevice: %v", err)
 	}
@@ -51,11 +61,15 @@ func newTestDisk(t *testing.T) *DeviceState {
 type blockingReader struct {
 	payload []byte
 	release chan struct{}
+	started chan struct{}
 	inner   *bytes.Reader
 }
 
 func (r *blockingReader) Read(p []byte) (int, error) {
 	if r.inner == nil {
+		if r.started != nil {
+			close(r.started)
+		}
 		<-r.release
 		r.inner = bytes.NewReader(r.payload)
 	}
@@ -68,12 +82,7 @@ func putViaGate(t *testing.T, gate *poolGate, disk *DeviceState, fid, aliasFor u
 	if err := gate.reserve(fid, aliasFor, confirmed); err != nil {
 		return err
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			gate.release(fid, aliasFor)
-		}
-	}()
+	defer gate.release(fid, aliasFor)
 	pw, err := disk.PrepareWrite(fid, uint64(len(payload)))
 	if err != nil {
 		return err
@@ -86,7 +95,6 @@ func putViaGate(t *testing.T, gate *poolGate, disk *DeviceState, fid, aliasFor u
 		pw.Abort()
 		return err
 	}
-	committed = true
 	return nil
 }
 
@@ -101,17 +109,18 @@ func TestConcurrentSamePutOneWins(t *testing.T) {
 	payload := []byte("same fid, concurrent attempts")
 
 	release := make(chan struct{})
+	started := make(chan struct{})
 	var firstErr, secondErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		firstErr = putViaGate(t, gate, disk, fid, 0, payload, &blockingReader{payload: payload, release: release})
+		firstErr = putViaGate(t, gate, disk, fid, 0, payload, &blockingReader{payload: payload, release: release, started: started})
 	}()
 	go func() {
 		defer wg.Done()
-		time.Sleep(20 * time.Millisecond) // let the first attempt reserve first
+		<-started
 		secondErr = putViaGate(t, gate, disk, fid, 0, payload, bytes.NewReader(payload))
 		close(release) // let the first attempt proceed to commit once the second is done
 	}()
@@ -141,18 +150,19 @@ func TestAliasRacesPlainWrite(t *testing.T) {
 	yPayload := []byte("Y, aliased from A")
 
 	release := make(chan struct{})
+	started := make(chan struct{})
 	var plainErr, aliasErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		plainErr = putViaGate(t, gate, disk, fidA, 0, plainPayload, &blockingReader{payload: plainPayload, release: release})
+		plainErr = putViaGate(t, gate, disk, fidA, 0, plainPayload, &blockingReader{payload: plainPayload, release: release, started: started})
 	}()
 	go func() {
 		defer wg.Done()
-		time.Sleep(20 * time.Millisecond)
-		aliasErr = putViaGate(t, gate, disk, fidY, fidA, yPayload, bytes.NewReader(yPayload))
+		<-started
+		aliasErr = putViaGate(t, gate, disk, fidY, fidA, append(append([]byte{}, yPayload...), 1), bytes.NewReader(append(append([]byte{}, yPayload...), 1)))
 		close(release)
 	}()
 	wg.Wait()
@@ -232,8 +242,10 @@ func TestReservationReleasedOnAbort(t *testing.T) {
 // then goes silent must not block Put forever — docs/DESIGN.md §3.3's
 // reservation stall timeout.
 func TestStallingChunkReaderTimesOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	r := &stallingChunkReader{
-		stream:  &neverRespondingStream{},
+		stream:  &neverRespondingStream{ctx: ctx},
 		timeout: 30 * time.Millisecond,
 	}
 	start := time.Now()
@@ -252,12 +264,16 @@ func TestStallingChunkReaderTimesOut(t *testing.T) {
 // via stallingChunkReader's own timeout racing it.
 type neverRespondingStream struct {
 	grpc.ServerStream
+	ctx context.Context
 }
 
 func (s *neverRespondingStream) Recv() (*bsospb.PutRequest, error) {
-	select {}
+	<-s.ctx.Done()
+	return nil, s.ctx.Err()
 }
 
 func (s *neverRespondingStream) SendAndClose(*bsospb.PutResponse) error {
 	return nil
 }
+
+func (s *neverRespondingStream) Context() context.Context { return s.ctx }

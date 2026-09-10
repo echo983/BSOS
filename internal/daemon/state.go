@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,13 @@ var (
 // picked the target fid before calling Put.
 const aliasJumpCode = 1
 
+type deviceFile interface {
+	io.ReaderAt
+	io.WriterAt
+	Sync() error
+	Close() error
+}
+
 // DeviceState is one disk's state, implementing docs/DESIGN.md §3.3's
 // two-phase commit: reserveExtent/confirmExtent/releaseExtent (step 1,
 // disk-scoped) plus a bounded-concurrency I/O dispatcher (§3.12). The
@@ -31,13 +39,18 @@ const aliasJumpCode = 1
 // identity is pool-wide, this type only knows about its own disk.
 type DeviceState struct {
 	mu         sync.Mutex
-	file       *os.File
+	file       deviceFile
 	devicePath string
 	diskID     uint64
 	diskBytes  uint64
 
 	intervals        []interval // confirmed occupied extents
 	pendingIntervals []interval // reserved, not yet committed
+
+	indexMu   sync.RWMutex
+	confirmed map[uint64]objectRef
+	indexEnd  uint64
+	indexErr  error
 
 	ioSem chan struct{} // bounded-concurrency dispatcher, §3.12: one per disk
 }
@@ -57,7 +70,17 @@ func OpenDevice(devicePath string, diskID uint64, ioConcurrency int) (*DeviceSta
 		f.Close()
 		return nil, fmt.Errorf("size %s: %w", devicePath, err)
 	}
-	intervals, err := scanConfirmedIntervals(f, diskBytes)
+	headerBytes := make([]byte, blk.HeaderBytes)
+	if _, err := f.ReadAt(headerBytes, 0); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("read header: %w", err)
+	}
+	header, err := blk.ParseHeader(headerBytes)
+	if err != nil || header.Version != blk.FormatVersion || header.DiskID != diskID || diskBytes <= blk.GridStart {
+		f.Close()
+		return nil, fmt.Errorf("invalid device header, identity or size: %v", err)
+	}
+	confirmed, intervals, indexEnd, err := replayIndex(f, diskBytes)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("scan intervals %s: %w", devicePath, err)
@@ -71,6 +94,8 @@ func OpenDevice(devicePath string, diskID uint64, ioConcurrency int) (*DeviceSta
 		diskID:     diskID,
 		diskBytes:  diskBytes,
 		intervals:  intervals,
+		confirmed:  confirmed,
+		indexEnd:   indexEnd,
 		ioSem:      make(chan struct{}, ioConcurrency),
 	}, nil
 }
@@ -79,9 +104,13 @@ func (s *DeviceState) Close() error {
 	return s.file.Close()
 }
 
-func (s *DeviceState) acquireIO() func() {
-	s.ioSem <- struct{}{}
-	return func() { <-s.ioSem }
+func (s *DeviceState) acquireIO(ctx context.Context) (func(), error) {
+	select {
+	case s.ioSem <- struct{}{}:
+		return func() { <-s.ioSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // PreparedWrite is docs/DESIGN.md §3.3 step 1's result: the extent is
@@ -101,6 +130,9 @@ type PreparedWrite struct {
 // only after docs/DESIGN.md §3.3 step 0's pool-wide fid gate has
 // already passed for fid (and alias_for, if any).
 func (s *DeviceState) PrepareWrite(fid uint64, size uint64) (*PreparedWrite, error) {
+	if size == 0 {
+		return nil, fmt.Errorf("empty object")
+	}
 	addr, slotIndex, slotsNeeded, err := blk.AddrForFID(s.diskBytes, fid, size)
 	if err != nil {
 		return nil, fmt.Errorf("address: %w", err)
@@ -119,7 +151,20 @@ func (s *DeviceState) PrepareWrite(fid uint64, size uint64) (*PreparedWrite, err
 // still responsible for calling Abort in that case (WriteFrom itself
 // only writes bytes, it does not release the reservation).
 func (pw *PreparedWrite) WriteFrom(r io.Reader) error {
-	release := pw.disk.acquireIO()
+	return pw.WriteFromContext(context.Background(), r)
+}
+
+func (pw *PreparedWrite) WriteFromContext(ctx context.Context, r io.Reader) error {
+	queueCtx := ctx
+	cancel := func() {}
+	if stream, ok := r.(*stallingChunkReader); ok {
+		queueCtx, cancel = context.WithTimeout(ctx, stream.timeout)
+	}
+	release, err := pw.disk.acquireIO(queueCtx)
+	cancel()
+	if err != nil {
+		return err
+	}
 	defer release()
 
 	if err := writeExact(pw.disk.file, pw.addr, pw.size, r); err != nil {
@@ -143,39 +188,70 @@ func (pw *PreparedWrite) Commit(aliasFor uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries := 1
-	if aliasFor != 0 {
-		entries = 2
+	if aliasFor == pw.fid && aliasFor != 0 || aliasFor != 0 && pw.size < 2 {
+		return fmt.Errorf("invalid alias")
 	}
-	indexOffset, err := blk.FindIndexEnd(s.file)
+	s.indexMu.RLock()
+	fault := s.indexErr
+	_, exists := s.confirmed[pw.fid]
+	_, aliasExists := s.confirmed[aliasFor]
+	s.indexMu.RUnlock()
+	if fault != nil {
+		return fault
+	}
+	if exists || aliasFor != 0 && aliasExists {
+		return ErrConflict
+	}
+	entry, err := blk.BuildIndexEntry(pw.fid, pw.size, 0)
 	if err != nil {
-		return fmt.Errorf("index end: %w", err)
+		return err
 	}
-	if indexOffset%blk.IndexEntrySize != 0 {
-		return fmt.Errorf("index offset 0x%X not aligned", indexOffset)
-	}
-	if indexOffset+uint64(entries)*blk.IndexEntrySize > blk.IndexStart+blk.IndexBytes {
-		return fmt.Errorf("index stream full")
-	}
-
-	off := indexOffset
 	if aliasFor != 0 {
-		jumpEntry, err := blk.BuildIndexEntry(aliasFor, blk.IndexJumpSentinel, aliasJumpCode)
+		jump, err := blk.BuildIndexEntry(aliasFor, blk.IndexJumpSentinel, aliasJumpCode)
 		if err != nil {
-			return fmt.Errorf("build jump entry: %w", err)
+			return err
 		}
-		if _, err := s.file.WriteAt(jumpEntry, int64(off)); err != nil {
-			return fmt.Errorf("write jump entry: %w", err)
-		}
-		off += blk.IndexEntrySize
+		entry = append(jump, entry...)
 	}
-	realEntry, err := blk.BuildIndexEntry(pw.fid, pw.size, 0)
+	off := s.indexEnd
+	if off+uint64(len(entry)) > blk.GridStart {
+		return blk.ErrIndexFull
+	}
+	// Flush data before publishing a reference to it. A successful response
+	// requires the index flush too; no on-disk format change is introduced.
+	if err := s.file.Sync(); err != nil {
+		return fmt.Errorf("sync payload: %w", err)
+	}
+	n, err := s.file.WriteAt(entry, int64(off))
+	if err == nil && n != len(entry) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = s.file.Sync()
+	}
 	if err != nil {
-		return fmt.Errorf("build entry: %w", err)
+		// Restore the unwritten tail before allowing this extent to be reused.
+		cleared, clearErr := s.file.WriteAt(make([]byte, len(entry)), int64(off))
+		if clearErr == nil && cleared != len(entry) {
+			clearErr = io.ErrShortWrite
+		}
+		if clearErr == nil {
+			clearErr = s.file.Sync()
+		}
+		if clearErr != nil {
+			s.indexMu.Lock()
+			s.indexErr = fmt.Errorf("index rollback failed; reopen required: %w", clearErr)
+			s.indexMu.Unlock()
+		}
+		return fmt.Errorf("commit index: %w", err)
 	}
-	if _, err := s.file.WriteAt(realEntry, int64(off)); err != nil {
-		return fmt.Errorf("write entry: %w", err)
+	s.indexMu.Lock()
+	s.confirmed[pw.fid] = objectRef{pw.fid, pw.size, pw.size}
+	if aliasFor != 0 {
+		s.confirmed[aliasFor] = objectRef{pw.fid, pw.size, pw.size - 1}
 	}
+	s.indexMu.Unlock()
+	s.indexEnd += uint64(len(entry))
 
 	s.pendingIntervals = removeInterval(s.pendingIntervals, pw.iv)
 	s.intervals = append(s.intervals, pw.iv)
@@ -195,54 +271,64 @@ func (pw *PreparedWrite) Abort() {
 // alias if present. docs/DESIGN.md §5's footnote: a jump target's stored
 // payload carries one extra byte versus its logical content, trimmed
 // here on read, same as NBSS.
-func (s *DeviceState) Get(fid uint64) (data []byte, size uint64, err error) {
-	release := s.acquireIO()
+func (s *DeviceState) Get(fid uint64) ([]byte, uint64, error) {
+	ref, err := s.lookup(fid)
+	if err != nil {
+		return nil, 0, err
+	}
+	data, err := s.readRange(context.Background(), ref, 0, ref.size)
+	return data, ref.size, err
+}
+
+func (s *DeviceState) readRange(ctx context.Context, ref objectRef, start, end uint64) ([]byte, error) {
+	release, err := s.acquireIO(ctx)
+	if err != nil {
+		return nil, err
+	}
 	defer release()
-
-	logicSize, actualFID, actualSize, found, jump, err := blk.FindLatestIndexEntry(s.file, fid)
+	addr, _, _, err := blk.AddrForFID(s.diskBytes, ref.fid, ref.storedSize)
 	if err != nil {
-		return nil, 0, fmt.Errorf("lookup: %w", err)
+		return nil, err
 	}
-	if !found {
-		return nil, 0, ErrNotFound
-	}
-	addr, _, _, err := blk.AddrForFID(s.diskBytes, actualFID, actualSize)
+	buf := make([]byte, end-start)
+	n, err := s.file.ReadAt(buf, int64(addr+start))
 	if err != nil {
-		return nil, 0, fmt.Errorf("address: %w", err)
+		return nil, fmt.Errorf("read payload: %w", err)
 	}
-	buf := make([]byte, actualSize)
-	if _, err := s.file.ReadAt(buf, int64(addr)); err != nil && err != io.EOF {
-		return nil, 0, fmt.Errorf("read: %w", err)
+	if n != len(buf) {
+		return nil, io.ErrUnexpectedEOF
 	}
-	if jump && len(buf) > 0 {
-		return buf[:len(buf)-1], logicSize, nil
-	}
-	return buf, logicSize, nil
+	return buf, nil
 }
 
-// Head returns only the size for fid, without reading its data.
-func (s *DeviceState) Head(fid uint64) (size uint64, err error) {
-	logicSize, _, _, found, _, err := blk.FindLatestIndexEntry(s.file, fid)
-	if err != nil {
-		return 0, fmt.Errorf("lookup: %w", err)
-	}
-	if !found {
-		return 0, ErrNotFound
-	}
-	return logicSize, nil
+func (s *DeviceState) Head(fid uint64) (uint64, error) {
+	ref, err := s.lookup(fid)
+	return ref.size, err
 }
-
-// Confirmed reports whether fid already has a durable entry on this
-// disk — the disk-scoped half of the pool-wide existence check
-// docs/DESIGN.md §3.3 step 0 fans out to (§3.11's broadcast).
 func (s *DeviceState) Confirmed(fid uint64) (bool, error) {
-	_, _, _, found, _, err := blk.FindLatestIndexEntry(s.file, fid)
-	return found, err
+	_, err := s.lookup(fid)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
-func writeExact(f *os.File, addr uint64, total uint64, r io.Reader) error {
+// currentCHD recomputes this disk's CH_d (docs/DESIGN.md §4/§3.11) over
+// both confirmed and pending extents, so it never overpromises capacity
+// that an in-flight write has already reserved.
+func (s *DeviceState) currentCHD(targetP float64) uint64 {
+	s.mu.Lock()
+	all := make([]interval, 0, len(s.intervals)+len(s.pendingIntervals))
+	all = append(all, s.intervals...)
+	all = append(all, s.pendingIntervals...)
+	diskBytes, diskID := s.diskBytes, s.diskID
+	s.mu.Unlock()
+	return computeCHD(diskBytes, diskID, all, targetP)
+}
+
+func writeExact(f io.WriterAt, addr uint64, total uint64, r io.Reader) error {
 	const chunkSize = 4 << 20
-	buf := make([]byte, chunkSize)
+	buf := make([]byte, min(uint64(chunkSize), total))
 	var written uint64
 	for written < total {
 		want := uint64(chunkSize)
@@ -251,8 +337,10 @@ func writeExact(f *os.File, addr uint64, total uint64, r io.Reader) error {
 		}
 		n, err := io.ReadFull(r, buf[:want])
 		if n > 0 {
-			if _, werr := f.WriteAt(buf[:n], int64(addr+written)); werr != nil {
+			if count, werr := f.WriteAt(buf[:n], int64(addr+written)); werr != nil {
 				return werr
+			} else if count != n {
+				return io.ErrShortWrite
 			}
 			written += uint64(n)
 		}
@@ -267,23 +355,29 @@ func writeExact(f *os.File, addr uint64, total uint64, r io.Reader) error {
 	// abort on either a short or an over-long stream, never truncate
 	// silently).
 	extra := make([]byte, 1)
-	if n, err := r.Read(extra); n > 0 || (err != nil && err != io.EOF) {
+	n, err := io.ReadFull(r, extra)
+	if n > 0 {
 		return fmt.Errorf("stream carried more than declared total_size=%d", total)
+	}
+	if err != io.EOF {
+		return fmt.Errorf("finish stream: %w", err)
 	}
 	return nil
 }
 
-func writeZeros(f *os.File, addr uint64, length uint64) error {
+func writeZeros(f io.WriterAt, addr uint64, length uint64) error {
 	const chunkSize = 4 << 20
-	zero := make([]byte, chunkSize)
+	zero := make([]byte, min(uint64(chunkSize), length))
 	var written uint64
 	for written < length {
 		want := uint64(chunkSize)
 		if remaining := length - written; remaining < want {
 			want = remaining
 		}
-		if _, err := f.WriteAt(zero[:want], int64(addr+written)); err != nil {
+		if n, err := f.WriteAt(zero[:want], int64(addr+written)); err != nil {
 			return err
+		} else if uint64(n) != want {
+			return io.ErrShortWrite
 		}
 		written += want
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"bsos/internal/blk"
+	"bsos/internal/zram"
 )
 
 func main() {
@@ -16,6 +17,8 @@ func main() {
 	switch os.Args[1] {
 	case "blk":
 		os.Exit(runBlk(os.Args[2:]))
+	case "zram":
+		os.Exit(runZram(os.Args[2:]))
 	case "-h", "--help", "help":
 		printUsage()
 		os.Exit(0)
@@ -24,6 +27,40 @@ func main() {
 		printUsage()
 		os.Exit(2)
 	}
+}
+
+func runZram(args []string) int {
+	if len(args) < 1 {
+		printZramUsage()
+		return 2
+	}
+
+	switch args[0] {
+	case "create":
+		return zram.RunCreate(args[1:])
+	case "flush":
+		return zram.RunFlush(args[1:])
+	case "load":
+		return zram.RunLoad(args[1:])
+	case "-h", "--help", "help":
+		printZramUsage()
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "E_BAD_COMMAND: unknown zram command: %s\n", args[0])
+		printZramUsage()
+		return 2
+	}
+}
+
+func printZramUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  bsos zram create <size> [flags]")
+	fmt.Println("  bsos zram flush [flags]")
+	fmt.Println("  bsos zram load [flags]")
+	fmt.Println("Notes:")
+	fmt.Println("  zram requires root for device access")
+	fmt.Println("  bsosd itself auto-loads snapshots at startup when -zram-snapshot-dir")
+	fmt.Println("  is set (docs/DESIGN.md §3.13) - manual `zram load` is for standalone use")
 }
 
 func runBlk(args []string) int {
@@ -66,6 +103,9 @@ func printUsage() {
 	fmt.Println("  bsos blk index-restore <device> [flags]")
 	fmt.Println("  bsos blk index-compact [flags]")
 	fmt.Println("  bsos blk packed-scrub [flags]")
+	fmt.Println("  bsos zram create <size> [flags]")
+	fmt.Println("  bsos zram flush [flags]")
+	fmt.Println("  bsos zram load [flags]")
 	fmt.Println("Notes:")
 	fmt.Println("  init/find require root when accessing block devices")
 	fmt.Println("  find writes pan.json in the current directory")
