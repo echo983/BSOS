@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"bsos/internal/daemon"
+	"github.com/echo983/BSOS/internal/daemon"
 )
 
 func main() {

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/pan"
 )
 
 type loadOptions struct {

@@ -18,8 +18,8 @@ import (
 
 	"google.golang.org/grpc"
 
-	"bsos/internal/blk"
-	"bsos/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
 )
 
 // newTestDisk creates a sparse temp file large enough to have a real

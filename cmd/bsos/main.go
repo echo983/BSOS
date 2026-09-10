@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"bsos/internal/blk"
-	"bsos/internal/zram"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/zram"
 )
 
 func main() {

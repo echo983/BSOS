@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/zeebo/xxh3"
@@ -16,7 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"bsos/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
 )
 
 const (
@@ -33,6 +34,11 @@ const (
 var ErrJumpExhausted = errors.New("jump retry exhausted: all jump codes collided")
 
 // Client interacts with a BSOS daemon over gRPC.
+//
+// Thread Safety:
+// A Client instance is safe for concurrent use by multiple goroutines. Third-party
+// applications and services should initialize a single Client at startup and share
+// it throughout the lifecycle of the process rather than creating connections per request.
 type Client struct {
 	conn      *grpc.ClientConn
 	pb        bsospb.BSOSClient
@@ -118,6 +124,32 @@ func (c *Client) Close() error {
 // per docs/CLIENT_SPEC.md §1.
 func ComputeFID(content []byte) uint64 {
 	return xxh3.Hash(content)
+}
+
+// ComputeFileFID streams the file at localPath to compute its 64-bit FID using xxh3_64
+// and returns (fid, totalSize, error) without reading the entire file into memory.
+func ComputeFileFID(localPath string) (uint64, uint64, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("bsos client: open file %s: %w", localPath, err)
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return 0, 0, fmt.Errorf("bsos client: stat file %s: %w", localPath, err)
+	}
+	if stat.IsDir() {
+		return 0, 0, fmt.Errorf("bsos client: %s is a directory", localPath)
+	}
+
+	h := xxh3.New()
+	buf := make([]byte, DefaultChunkSize)
+	if _, err := io.CopyBuffer(h, f, buf); err != nil {
+		return 0, 0, fmt.Errorf("bsos client: hash file %s: %w", localPath, err)
+	}
+
+	return h.Sum64(), uint64(stat.Size()), nil
 }
 
 // Put streams payload from r to the BSOS daemon per docs/CLIENT_SPEC.md §2.
@@ -207,6 +239,45 @@ func (c *Client) PutBytes(ctx context.Context, data []byte) (uint64, error) {
 	return fid, err
 }
 
+// PutFile streams an on-disk file to the BSOS daemon without buffering the full
+// content in RAM. It computes the content-addressed fid via xxh3_64 and performs
+// a standard direct Put.
+func (c *Client) PutFile(ctx context.Context, localPath string) (uint64, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return 0, fmt.Errorf("bsos client: open file %s: %w", localPath, err)
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("bsos client: stat file %s: %w", localPath, err)
+	}
+	if stat.IsDir() {
+		return 0, fmt.Errorf("bsos client: %s is a directory", localPath)
+	}
+	size := uint64(stat.Size())
+	if size == 0 {
+		return 0, fmt.Errorf("bsos client: empty file %s not allowed (total_size must be > 0)", localPath)
+	}
+
+	h := xxh3.New()
+	buf := make([]byte, c.chunkSize)
+	if _, err := io.CopyBuffer(h, f, buf); err != nil {
+		return 0, fmt.Errorf("bsos client: hash file %s: %w", localPath, err)
+	}
+	fid := h.Sum64()
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("bsos client: rewind file %s: %w", localPath, err)
+	}
+
+	if err := c.Put(ctx, fid, size, 0, f); err != nil {
+		return fid, err
+	}
+	return fid, nil
+}
+
 // JumpResult describes the outcome of PutWithJumpRetry.
 type JumpResult struct {
 	// FID is the primary logical content identifier (xxh3_64(originalContent)).
@@ -261,6 +332,84 @@ func (c *Client) PutWithJumpRetry(ctx context.Context, data []byte, opts ...Jump
 		jumpFID := ComputeFID(jumpData)
 
 		err := c.Put(ctx, jumpFID, uint64(len(jumpData)), fid, bytes.NewReader(jumpData))
+		if err == nil {
+			return JumpResult{
+				FID:        fid,
+				TargetFID:  jumpFID,
+				JumpsTaken: jumpCode,
+			}, nil
+		}
+		if !IsConflict(err) {
+			return JumpResult{FID: fid, TargetFID: jumpFID, JumpsTaken: jumpCode}, err
+		}
+	}
+
+	return JumpResult{FID: fid, JumpsTaken: maxJumps}, ErrJumpExhausted
+}
+
+// PutFileWithJumpRetry streams an on-disk file to the BSOS daemon with automatic
+// collision handling. If a direct write produces a conflict, it probes jump codes
+// in 1..MaxJumps, streaming the file payload appended with the 1-byte jump code.
+func (c *Client) PutFileWithJumpRetry(ctx context.Context, localPath string, opts ...JumpOptions) (JumpResult, error) {
+	maxJumps := MaxJumpCode
+	if len(opts) > 0 && opts[0].MaxJumps > 0 {
+		maxJumps = min(opts[0].MaxJumps, MaxJumpCode)
+	}
+
+	f, err := os.Open(localPath)
+	if err != nil {
+		return JumpResult{}, fmt.Errorf("bsos client: open file %s: %w", localPath, err)
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return JumpResult{}, fmt.Errorf("bsos client: stat file %s: %w", localPath, err)
+	}
+	if stat.IsDir() {
+		return JumpResult{}, fmt.Errorf("bsos client: %s is a directory", localPath)
+	}
+	size := uint64(stat.Size())
+	if size == 0 {
+		return JumpResult{}, fmt.Errorf("bsos client: empty file %s not allowed (total_size must be > 0)", localPath)
+	}
+
+	baseHasher := xxh3.New()
+	buf := make([]byte, c.chunkSize)
+	if _, err := io.CopyBuffer(baseHasher, f, buf); err != nil {
+		return JumpResult{}, fmt.Errorf("bsos client: hash file %s: %w", localPath, err)
+	}
+	fid := baseHasher.Sum64()
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return JumpResult{FID: fid}, fmt.Errorf("bsos client: rewind file %s: %w", localPath, err)
+	}
+
+	err = c.Put(ctx, fid, size, 0, f)
+	if err == nil {
+		return JumpResult{
+			FID:        fid,
+			TargetFID:  fid,
+			JumpsTaken: 0,
+		}, nil
+	}
+
+	if !IsConflict(err) {
+		return JumpResult{FID: fid}, err
+	}
+
+	// Collision occurred: run one-hop jump-retry loop using cloned hasher
+	for jumpCode := 1; jumpCode <= maxJumps; jumpCode++ {
+		h := *baseHasher
+		h.Write([]byte{byte(jumpCode)})
+		jumpFID := h.Sum64()
+
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return JumpResult{FID: fid, TargetFID: jumpFID, JumpsTaken: jumpCode}, fmt.Errorf("bsos client: rewind file %s: %w", localPath, err)
+		}
+
+		r := io.MultiReader(f, bytes.NewReader([]byte{byte(jumpCode)}))
+		err = c.Put(ctx, jumpFID, size+1, fid, r)
 		if err == nil {
 			return JumpResult{
 				FID:        fid,
@@ -334,6 +483,24 @@ func (c *Client) GetBytes(ctx context.Context, fid uint64, optRange ...Range) ([
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// GetFile streams the object content for fid directly to localPath on disk.
+// If an error occurs during download, the partially written file is removed.
+func (c *Client) GetFile(ctx context.Context, fid uint64, localPath string, optRange ...Range) error {
+	f, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("bsos client: create destination file %s: %w", localPath, err)
+	}
+
+	_, _, err = c.Get(ctx, fid, f, optRange...)
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(localPath)
+		return err
+	}
+
+	return f.Close()
 }
 
 // Head returns the logical size of an object without retrieving its payload.

@@ -25,6 +25,27 @@ See `docs/IMPLEMENTATION_PLAN.md` for milestone scope and remaining work,
 `docs/DESIGN.md` for server semantics, and `docs/CLIENT_SPEC.md` for the
 client-facing contract.
 
+## Developer Guide & Examples
+
+- **Developer Integration Handbook**: [docs/CLIENT_GUIDE.md](docs/CLIENT_GUIDE.md) — Comprehensive guide on Go SDK (`pkg/client`), cross-language gRPC integration, collision handling, and CLI automation.
+- **Runnable Examples**: [examples/](examples/)
+  - [Go Basic Client](examples/go/basic/main.go)
+  - [Go Zero-RAM File Streaming](examples/go/file_streaming/main.go)
+  - [Python Client with gRPC](examples/python/client.py)
+  - [Bash Pipeline Automation](examples/bash/pipeline.sh)
+
+### Quick Go Import
+
+```bash
+go get github.com/echo983/BSOS/pkg/client
+```
+
+### Quick CLI Install
+
+```bash
+go install github.com/echo983/BSOS/cmd/bsos@latest
+```
+
 ## Relationship to NBSS
 
 NBSS is a private reference implementation studied for its physical layout

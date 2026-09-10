@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"bsos/internal/blk"
-	"bsos/internal/daemon"
-	"bsos/internal/pan"
-	"bsos/pkg/client"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/daemon"
+	"github.com/echo983/BSOS/internal/pan"
+	"github.com/echo983/BSOS/pkg/client"
 )
 
 func startCLITestDaemon(t *testing.T) (string, func()) {
@@ -233,5 +233,44 @@ func TestCLIPutGetHeadLifecycle(t *testing.T) {
 	})
 	if code != 1 || !strings.Contains(stderr, "E_NOT_FOUND") {
 		t.Fatalf("expected E_NOT_FOUND on missing fid, got code=%d, err=%q", code, stderr)
+	}
+}
+
+func TestCLIPutJSON(t *testing.T) {
+	addr, cleanup := startCLITestDaemon(t)
+	defer cleanup()
+
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "json_payload.bin")
+	payload := []byte("JSON structured output verification payload for CLI")
+	if err := os.WriteFile(inputFile, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Put with -json
+	code, stdout, stderr := captureOutput(t, func() int {
+		return runPut([]string{"-addr", addr, "-json", inputFile})
+	})
+	if code != 0 {
+		t.Fatalf("runPut -json failed: code=%d, err=%q", code, stderr)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v, raw=%q", err, stdout)
+	}
+
+	wantFIDHex := fmt.Sprintf("0x%016x", client.ComputeFID(payload))
+	if res["fid"] != wantFIDHex {
+		t.Fatalf("fid mismatch: got %v, want %v", res["fid"], wantFIDHex)
+	}
+	if res["target_fid"] != wantFIDHex {
+		t.Fatalf("target_fid mismatch: got %v, want %v", res["target_fid"], wantFIDHex)
+	}
+	if res["size"].(float64) != float64(len(payload)) {
+		t.Fatalf("size mismatch: got %v, want %v", res["size"], len(payload))
+	}
+	if res["jumps"].(float64) != 0 {
+		t.Fatalf("jumps mismatch: got %v, want 0", res["jumps"])
 	}
 }

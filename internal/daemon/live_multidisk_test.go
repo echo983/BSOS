@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"bsos/internal/blk"
-	"bsos/internal/daemon/bsospb"
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/pan"
 	"github.com/zeebo/xxh3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

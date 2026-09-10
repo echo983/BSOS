@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/pan"
 )
 
 const (

@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"bsos/internal/blk"
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/pan"
 )
 
 const (

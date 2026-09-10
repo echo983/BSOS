@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/pan"
 )
 
 // Keep unavailable configured tiers so a later boot can recover them, while

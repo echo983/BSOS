@@ -7,7 +7,7 @@ import (
 
 	"github.com/zeebo/xxh3"
 
-	"bsos/internal/blk"
+	"github.com/echo983/BSOS/internal/blk"
 )
 
 // computeCHD is docs/DESIGN.md §4's Bonnie source, ported unchanged

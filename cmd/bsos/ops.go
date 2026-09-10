@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"bsos/pkg/client"
+	"github.com/echo983/BSOS/pkg/client"
 )
 
 func defaultAddr() string {
@@ -25,32 +25,12 @@ func defaultAddr() string {
 func runPut(args []string) int {
 	fs := flag.NewFlagSet("bsos put", flag.ContinueOnError)
 	addr := fs.String("addr", defaultAddr(), "BSOS daemon address")
+	asJSON := fs.Bool("json", false, "output JSON")
 	noJump := fs.Bool("no-jump", false, "disable automatic one-hop jump collision retry")
 	maxJumps := fs.Int("max-jumps", client.MaxJumpCode, "maximum jump attempts (1..255)")
 	timeout := fs.Duration("timeout", 2*time.Minute, "timeout for Put operation")
 	if err := fs.Parse(args); err != nil {
 		return 2
-	}
-
-	var data []byte
-	var err error
-	if fs.NArg() > 0 && fs.Arg(0) != "-" {
-		data, err = os.ReadFile(fs.Arg(0))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "E_IO: read input file %s: %v\n", fs.Arg(0), err)
-			return 1
-		}
-	} else {
-		data, err = io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "E_IO: read stdin: %v\n", err)
-			return 1
-		}
-	}
-
-	if len(data) == 0 {
-		fmt.Fprintf(os.Stderr, "E_INVALID_ARGUMENT: empty payload not allowed (total_size must be > 0)\n")
-		return 1
 	}
 
 	c, err := client.New(*addr)
@@ -63,36 +43,105 @@ func runPut(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	if *noJump {
-		fid, err := c.PutBytes(ctx, data)
+	var result client.JumpResult
+	var totalSize uint64
+
+	if fs.NArg() > 0 && fs.Arg(0) != "-" {
+		filePath := fs.Arg(0)
+		stat, err := os.Stat(filePath)
 		if err != nil {
-			if client.IsConflict(err) {
-				fmt.Fprintf(os.Stderr, "E_CONFLICT: fid 0x%016x already registered\n", fid)
-			} else {
-				fmt.Fprintf(os.Stderr, "E_PUT_FAILED: %v\n", err)
-			}
+			fmt.Fprintf(os.Stderr, "E_IO: stat input file %s: %v\n", filePath, err)
 			return 1
 		}
-		fmt.Printf("0x%016x\n", fid)
+		if stat.IsDir() {
+			fmt.Fprintf(os.Stderr, "E_INVALID_ARGUMENT: %s is a directory\n", filePath)
+			return 1
+		}
+		totalSize = uint64(stat.Size())
+		if totalSize == 0 {
+			fmt.Fprintf(os.Stderr, "E_INVALID_ARGUMENT: empty payload not allowed (total_size must be > 0)\n")
+			return 1
+		}
+
+		if *noJump {
+			fid, err := c.PutFile(ctx, filePath)
+			if err != nil {
+				if client.IsConflict(err) {
+					fmt.Fprintf(os.Stderr, "E_CONFLICT: fid 0x%016x already registered\n", fid)
+				} else {
+					fmt.Fprintf(os.Stderr, "E_PUT_FAILED: %v\n", err)
+				}
+				return 1
+			}
+			result = client.JumpResult{FID: fid, TargetFID: fid, JumpsTaken: 0}
+		} else {
+			res, err := c.PutFileWithJumpRetry(ctx, filePath, client.JumpOptions{MaxJumps: *maxJumps})
+			if err != nil {
+				if errors.Is(err, client.ErrJumpExhausted) {
+					fmt.Fprintf(os.Stderr, "E_JUMP_EXHAUSTED: collision on fid 0x%016x, all %d jump retries failed\n", res.FID, *maxJumps)
+				} else if client.IsConflict(err) {
+					fmt.Fprintf(os.Stderr, "E_CONFLICT: fid 0x%016x conflict: %v\n", res.FID, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "E_PUT_FAILED: %v\n", err)
+				}
+				return 1
+			}
+			result = res
+		}
+	} else {
+		// Reading from stdin
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "E_IO: read stdin: %v\n", err)
+			return 1
+		}
+		totalSize = uint64(len(data))
+		if totalSize == 0 {
+			fmt.Fprintf(os.Stderr, "E_INVALID_ARGUMENT: empty payload not allowed (total_size must be > 0)\n")
+			return 1
+		}
+
+		if *noJump {
+			fid, err := c.PutBytes(ctx, data)
+			if err != nil {
+				if client.IsConflict(err) {
+					fmt.Fprintf(os.Stderr, "E_CONFLICT: fid 0x%016x already registered\n", fid)
+				} else {
+					fmt.Fprintf(os.Stderr, "E_PUT_FAILED: %v\n", err)
+				}
+				return 1
+			}
+			result = client.JumpResult{FID: fid, TargetFID: fid, JumpsTaken: 0}
+		} else {
+			res, err := c.PutWithJumpRetry(ctx, data, client.JumpOptions{MaxJumps: *maxJumps})
+			if err != nil {
+				if errors.Is(err, client.ErrJumpExhausted) {
+					fmt.Fprintf(os.Stderr, "E_JUMP_EXHAUSTED: collision on fid 0x%016x, all %d jump retries failed\n", res.FID, *maxJumps)
+				} else if client.IsConflict(err) {
+					fmt.Fprintf(os.Stderr, "E_CONFLICT: fid 0x%016x conflict: %v\n", res.FID, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "E_PUT_FAILED: %v\n", err)
+				}
+				return 1
+			}
+			result = res
+		}
+	}
+
+	if *asJSON {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"fid":        fmt.Sprintf("0x%016x", result.FID),
+			"target_fid": fmt.Sprintf("0x%016x", result.TargetFID),
+			"size":       totalSize,
+			"jumps":      result.JumpsTaken,
+		})
 		return 0
 	}
 
-	res, err := c.PutWithJumpRetry(ctx, data, client.JumpOptions{MaxJumps: *maxJumps})
-	if err != nil {
-		if errors.Is(err, client.ErrJumpExhausted) {
-			fmt.Fprintf(os.Stderr, "E_JUMP_EXHAUSTED: collision on fid 0x%016x, all %d jump retries failed\n", res.FID, *maxJumps)
-		} else if client.IsConflict(err) {
-			fmt.Fprintf(os.Stderr, "E_CONFLICT: fid 0x%016x conflict: %v\n", res.FID, err)
-		} else {
-			fmt.Fprintf(os.Stderr, "E_PUT_FAILED: %v\n", err)
-		}
-		return 1
-	}
-
-	if res.JumpsTaken > 0 {
-		fmt.Printf("0x%016x (jumped to 0x%016x via jump code %d)\n", res.FID, res.TargetFID, res.JumpsTaken)
+	if result.JumpsTaken > 0 {
+		fmt.Printf("0x%016x (jumped to 0x%016x via jump code %d)\n", result.FID, result.TargetFID, result.JumpsTaken)
 	} else {
-		fmt.Printf("0x%016x\n", res.FID)
+		fmt.Printf("0x%016x\n", result.FID)
 	}
 	return 0
 }

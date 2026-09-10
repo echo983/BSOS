@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package bsos;
 
-option go_package = "bsos/internal/daemon/bsospb";
+option go_package = "github.com/echo983/BSOS/internal/daemon/bsospb";
 
 // See docs/DESIGN.md §4 for the rationale behind this shape.
 // gRPC only — there is no HTTP surface for this service.

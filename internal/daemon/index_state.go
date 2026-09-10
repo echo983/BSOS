@@ -6,7 +6,7 @@ import (
 	"io"
 	"sort"
 
-	"bsos/internal/blk"
+	"github.com/echo983/BSOS/internal/blk"
 )
 
 // objectRef is immutable after publication. Alias and target references are

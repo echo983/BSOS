@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"bsos/internal/blk"
-	"bsos/internal/daemon/bsospb"
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/pan"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

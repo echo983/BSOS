@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"bsos/internal/daemon/bsospb"
-	"bsos/internal/pan"
-	"bsos/internal/zram"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/pan"
+	"github.com/echo983/BSOS/internal/zram"
 )
 
 // Server implements docs/DESIGN.md §3.3's full two-phase write path

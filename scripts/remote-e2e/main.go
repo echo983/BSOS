@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"bsos/pkg/client"
+	"github.com/echo983/BSOS/pkg/client"
 )
 
 func discoverRemoteAddr() (string, error) {
@@ -136,20 +136,19 @@ func main() {
 	largeData := make([]byte, largeSize)
 	_, _ = rand.Read(largeData)
 	copy(largeData, []byte(fmt.Sprintf("BSOS-WAN-Large-%d:", time.Now().UnixNano())))
-	largeFID := client.ComputeFID(largeData)
 	largeSHA := sha256.Sum256(largeData)
 
 	start = time.Now()
-	err = c.Put(ctx, largeFID, uint64(len(largeData)), 0, bytes.NewReader(largeData))
+	res, err := c.PutWithJumpRetry(ctx, largeData)
 	if err != nil {
 		log.Fatalf("[FAIL] streaming Put 6 MiB: %v", err)
 	}
 	putDuration := time.Since(start)
 	putSpeed := float64(largeSize) / (1024 * 1024) / putDuration.Seconds()
-	log.Printf("  [PASS] Streamed 6 MiB Put to remote VPS in %v (%.2f MB/s)", putDuration, putSpeed)
+	log.Printf("  [PASS] Streamed 6 MiB Put to remote VPS in %v (%.2f MB/s, jumps=%d)", putDuration, putSpeed, res.JumpsTaken)
 
 	start = time.Now()
-	getLarge, err := c.GetBytes(ctx, largeFID)
+	getLarge, err := c.GetBytes(ctx, res.FID)
 	if err != nil {
 		log.Fatalf("[FAIL] GetBytes 6 MiB: %v", err)
 	}
@@ -249,7 +248,7 @@ func main() {
 		cliPath = filepath.Join("..", "..", "bin", "bsos")
 	}
 	if _, err := os.Stat(cliPath); err != nil {
-		cmd := exec.Command("go", "build", "-o", cliPath, "bsos/cmd/bsos")
+		cmd := exec.Command("go", "build", "-o", cliPath, "github.com/echo983/BSOS/cmd/bsos")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			log.Fatalf("[FAIL] build bsos CLI: %v\n%s", err, string(out))
 		}

@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"bsos/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
 )
 
 func TestOneHopAliasEndToEnd(t *testing.T) {

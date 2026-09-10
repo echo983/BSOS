@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"bsos/internal/blk"
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/pan"
 )
 
 func snapshotFixture(t *testing.T, dir string, id uint64) string {

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"bsos/internal/blk"
+	"github.com/echo983/BSOS/internal/blk"
 )
 
 type createOptions struct {

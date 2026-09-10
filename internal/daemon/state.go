@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"bsos/internal/blk"
+	"github.com/echo983/BSOS/internal/blk"
 )
 
 var (

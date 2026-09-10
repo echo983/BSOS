@@ -16,9 +16,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"bsos/internal/blk"
-	"bsos/internal/daemon"
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/daemon"
+	"github.com/echo983/BSOS/internal/pan"
 )
 
 func setupTestDaemon(t *testing.T) (*Client, func()) {
@@ -408,5 +408,138 @@ func TestClientErrorHelpers(t *testing.T) {
 	invalidErr := status.Error(codes.InvalidArgument, "invalid")
 	if !IsInvalidArgument(invalidErr) {
 		t.Fatalf("expected IsInvalidArgument to be true")
+	}
+}
+
+func TestClientFileHelpers(t *testing.T) {
+	c, cleanup := setupTestDaemon(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dir := t.TempDir()
+	testPath := filepath.Join(dir, "sample.bin")
+	data := bytes.Repeat([]byte("File-Helper-Test-Data-Payload-1234567890"), 5000) // ~200KB
+	if err := os.WriteFile(testPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. ComputeFileFID
+	fid, size, err := ComputeFileFID(testPath)
+	if err != nil {
+		t.Fatalf("ComputeFileFID failed: %v", err)
+	}
+	if fid != ComputeFID(data) {
+		t.Fatalf("ComputeFileFID fid mismatch: got 0x%X, want 0x%X", fid, ComputeFID(data))
+	}
+	if size != uint64(len(data)) {
+		t.Fatalf("ComputeFileFID size mismatch: got %d, want %d", size, len(data))
+	}
+
+	// 2. PutFile
+	putFID, err := c.PutFile(ctx, testPath)
+	if err != nil {
+		t.Fatalf("PutFile failed: %v", err)
+	}
+	if putFID != fid {
+		t.Fatalf("PutFile fid mismatch: got 0x%X, want 0x%X", putFID, fid)
+	}
+
+	// 3. GetFile
+	downloadPath := filepath.Join(dir, "downloaded.bin")
+	if err := c.GetFile(ctx, fid, downloadPath); err != nil {
+		t.Fatalf("GetFile failed: %v", err)
+	}
+	downloaded, err := os.ReadFile(downloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(downloaded, data) {
+		t.Fatalf("GetFile content mismatch")
+	}
+
+	// 4. GetFile with Range
+	rangePath := filepath.Join(dir, "slice.bin")
+	if err := c.GetFile(ctx, fid, rangePath, Range{Start: 10, End: 50}); err != nil {
+		t.Fatalf("GetFile with range failed: %v", err)
+	}
+	sliceData, err := os.ReadFile(rangePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sliceData, data[10:50]) {
+		t.Fatalf("GetFile slice mismatch")
+	}
+
+	// 5. GetFile with non-existent FID cleans up orphan file
+	badPath := filepath.Join(dir, "bad.bin")
+	err = c.GetFile(ctx, fid^0xDEAD, badPath)
+	if err == nil {
+		t.Fatalf("expected error downloading non-existent fid")
+	}
+	if _, statErr := os.Stat(badPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected orphan file to be deleted on failure")
+	}
+
+	// 6. PutFile on empty file fails
+	emptyPath := filepath.Join(dir, "empty.bin")
+	if err := os.WriteFile(emptyPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PutFile(ctx, emptyPath); err == nil {
+		t.Fatalf("expected error on empty file PutFile")
+	}
+
+	// 7. PutFileWithJumpRetry on colliding payload file
+	const diskSize = blk.GridStart + (32 << 20)
+	_, occupiedSlot, _, err := blk.AddrForFID(diskSize, fid, uint64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var collidingData []byte
+	for i := 0; ; i++ {
+		cand := []byte(fmt.Sprintf("file-jump-candidate-%d", i))
+		cFID := ComputeFID(cand)
+		if cFID == fid {
+			continue
+		}
+		_, slot, _, cErr := blk.AddrForFID(diskSize, cFID, uint64(len(cand)))
+		if cErr == nil && slot == occupiedSlot {
+			j1 := append(append([]byte(nil), cand...), 1)
+			jFID := ComputeFID(j1)
+			_, jSlot, _, jErr := blk.AddrForFID(diskSize, jFID, uint64(len(j1)))
+			if jErr == nil && jSlot != occupiedSlot {
+				collidingData = cand
+				break
+			}
+		}
+	}
+
+	collidingFile := filepath.Join(dir, "colliding.bin")
+	if err := os.WriteFile(collidingFile, collidingData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	jRes, err := c.PutFileWithJumpRetry(ctx, collidingFile)
+	if err != nil {
+		t.Fatalf("PutFileWithJumpRetry failed: %v", err)
+	}
+	if jRes.JumpsTaken != 1 {
+		t.Fatalf("expected JumpsTaken = 1, got %d", jRes.JumpsTaken)
+	}
+
+	// Read back via logical fid to file
+	collidingDl := filepath.Join(dir, "colliding_dl.bin")
+	if err := c.GetFile(ctx, jRes.FID, collidingDl); err != nil {
+		t.Fatalf("GetFile on jumped FID failed: %v", err)
+	}
+	readBack, err := os.ReadFile(collidingDl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(readBack, collidingData) {
+		t.Fatalf("readback data mismatch on PutFileWithJumpRetry")
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"bsos/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
 )
 
 func TestBonnieRPCAndCHDPow2(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"math"
 	"sync"
 
-	"bsos/internal/blk"
-	"bsos/internal/zram"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/zram"
 )
 
 // docs/DESIGN.md §3.11: disk selection is a server-owned best-fit

@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"bsos/internal/blk"
-	"bsos/internal/daemon/bsospb"
-	"bsos/internal/pan"
+	"github.com/echo983/BSOS/internal/blk"
+	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/internal/pan"
 )
 
 func routeDisk(id, slots uint64, path string) *DeviceState {
