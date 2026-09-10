@@ -87,11 +87,34 @@ plan avoids debugging both at once.
    multiple `GetResponse` messages. Fine at this milestone's scale;
    worth revisiting once the concurrency-model work (milestone 3) is
    settled, since it touches the same streaming plumbing.
-3. **Concurrency model.** Replace the placeholder locking from
-   milestone 2 with the real two-phase commit: pool-wide fid gate,
-   per-disk extent reservation, bounded-concurrency dispatcher. Highest
-   risk milestone — §1's test suite is written alongside or before this,
-   not after.
+3. **Concurrency model — done.** Replaced milestone 2's whole-operation
+   locking with docs/DESIGN.md §3.3's real two-phase commit:
+   `gate.go` (pool-wide fid reservation, step 0), `interval.go`
+   (per-disk extent reservation + a boot-time scan that rebuilds
+   confirmed extents from the index stream, step 1), `server.go`'s `Put`
+   orchestrating reserve → unlocked stream → commit/abort (steps 2-4),
+   and a stall timeout (`stallingChunkReader`) plus the pool gate's own
+   fan-out timeout. `state.go`'s `DeviceState` also gained the §3.12
+   per-disk bounded-concurrency dispatcher (a semaphore around each I/O
+   operation; simplified to one acquisition per whole transfer rather
+   than per aligned chunk flush — a known simplification, not a
+   correctness gap, noted for revisiting).
+
+   `internal/daemon/concurrency_test.go`, run under `-race`: same-fid
+   concurrent writes (exactly one wins), the exact bug found in design
+   review — a plain write to fid A racing a write with `alias_for: A` —
+   confirmed to always produce exactly one winner with the loser's data
+   never silently lost, an aborted write confirmed to leave its fid
+   completely free for an immediate retry, and the stall timeout firing
+   within its configured window against a client that never responds.
+   Not yet automated: the cross-disk version of the alias/plain-write
+   race (needs milestone 4's multiple disks to exercise for real) and a
+   higher-concurrency stress test; both worth adding once multi-disk
+   pooling lands.
+
+   Re-verified against real hardware (`/dev/sdb`) after the rewrite: a
+   fresh Put/Get round-trip still works end to end through the new
+   orchestration, not just the unit tests in isolation.
 4. **Multi-disk pooling.** `multidisk.go`'s best-fit routing and zram
    tiering, with the pool-wide gate now genuinely exercised across more
    than one disk. Includes the startup auto-load of zram snapshots
