@@ -62,11 +62,31 @@ plan avoids debugging both at once.
    unchanged from NBSS" claim (§5) is now demonstrated, not just
    asserted. `go.mod` (module `bsos`, go 1.21) and a Go toolchain
    (`golang-go` 1.24 via apt) are set up.
-2. **Single-disk Put/Get, correct but not yet concurrency-optimized.**
-   New wire format (client-declared fid, streaming header-first Put) end
-   to end, but the write path still holds its disk lock for the whole
-   operation (NBSS's current approach) rather than the two-phase model.
-   Validates the protocol and streaming plumbing in isolation.
+2. **Single-disk Put/Get — done.** `internal/daemon` (`state.go`,
+   `server.go`, `config.go`) and `cmd/bsosd` implement the new wire
+   format end to end: client-declared fid, `PutHeader`-first streaming
+   Put that writes chunks straight to disk as they arrive (no
+   full-payload buffering — that part of §3.3's benefit already holds),
+   `alias_for` registering a one-hop jump pair, Get/Head/Health. The
+   write path still holds its disk lock for the whole operation (NBSS's
+   current approach, no two-phase reservation yet) — that's the one
+   piece deferred to milestone 3, deliberately.
+
+   Verified against `/dev/sdb` with a real gRPC client, not just unit
+   tests: Put + idempotent-conflict retry (`AlreadyExists`), Head, Get
+   (byte-exact match), an `alias_for` write resolved correctly through
+   the jump indicator on both Head and the size arithmetic, a
+   missing-fid `NotFound`, and — the one that matters most — a
+   declared-100/sent-9-bytes stream aborting with a clear error *and*
+   confirmed to leave no index entry behind (`Head` on that fid still
+   returns `NotFound` afterward), exactly matching §3.3's "no silent
+   pad, slot free again as if never attempted" requirement.
+
+   Known simplification, not a correctness gap: `Get` sends its whole
+   response as one message rather than chunking large objects across
+   multiple `GetResponse` messages. Fine at this milestone's scale;
+   worth revisiting once the concurrency-model work (milestone 3) is
+   settled, since it touches the same streaming plumbing.
 3. **Concurrency model.** Replace the placeholder locking from
    milestone 2 with the real two-phase commit: pool-wide fid gate,
    per-disk extent reservation, bounded-concurrency dispatcher. Highest
