@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"bsos/internal/blk"
@@ -20,7 +20,7 @@ type createOptions struct {
 
 func RunCreate(args []string) int {
 	opts := createOptions{}
-	fs := flag.NewFlagSet("nbss zram create", flag.ContinueOnError)
+	fs := flag.NewFlagSet("bsos zram create", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&opts.device, "device", "", "")
 	fs.StringVar(&opts.note, "note", "", "")
@@ -57,7 +57,7 @@ func RunCreate(args []string) int {
 			return exitIO
 		}
 		if !alloc.canHotAdd && len(alloc.free) == 0 {
-			fmt.Fprintln(os.Stderr, "E_ZRAM_ALLOC: no empty zram devices and hot_add not writable; try `modprobe zram num_devices=N` or pass --device")
+			fmt.Fprintln(os.Stderr, "E_ZRAM_ALLOC: no empty zram devices and hot_add unavailable; try `modprobe zram num_devices=N` or pass --device")
 			return exitIO
 		}
 		devicePath, err = alloc.next()
@@ -96,29 +96,21 @@ func addZramDevice() (string, error) {
 	if _, err := os.Stat("/sys/class/zram-control/hot_add"); err != nil {
 		return "", fmt.Errorf("zram-control not available; load zram module (modprobe zram)")
 	}
-	if !hotAddWritable() {
-		return "", fmt.Errorf("zram hot_add not writable; create devices with modprobe zram num_devices=N or use --device")
+	if !hotAddAvailable() {
+		return "", fmt.Errorf("zram hot_add unavailable; create devices with modprobe zram num_devices=N or use --device")
 	}
-	before, err := listZramDevices()
+	// Reading hot_add creates a device and returns its numeric id.
+	// https://docs.kernel.org/admin-guide/blockdev/zram.html
+	raw, err := os.ReadFile("/sys/class/zram-control/hot_add")
 	if err != nil {
 		return "", err
 	}
-
-	if err := writeSysfs("/sys/class/zram-control/hot_add", "1"); err != nil {
-		return "", err
-	}
-
-	after, err := listZramDevices()
+	id, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 32)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid hot_add response: %w", err)
 	}
+	return fmt.Sprintf("/dev/zram%d", id), nil
 
-	for dev := range after {
-		if !before[dev] {
-			return filepath.Join("/dev", dev), nil
-		}
-	}
-	return "", fmt.Errorf("no new zram device found")
 }
 
 func findUnusedZramDevice() (string, error) {

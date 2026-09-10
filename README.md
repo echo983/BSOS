@@ -8,14 +8,15 @@ untrusted participants.
 
 ## Status
 
-Design is complete at `design-v0`. Implementation milestones 1–3 are
-committed; milestone 4 (multi-disk pooling and zram startup) is in progress.
-The working tree also includes the foundation repairs described in
+Design is complete at `design-v0`. Implementation milestones 1–4 are
+complete; milestone 5 (Trim, fragmentation, Bonnie) is next.
+Routing/recovery tests, real two-disk verification, and real zram host
+acceptance gate on Debian 13 VPS have passed. See [milestone 4 validation](docs/MILESTONE_4_VALIDATION_2026-09-10.md).
+The tree also includes the foundation repairs described in
 [the foundation validation report](docs/FOUNDATION_VALIDATION_2026-09-10.md).
 See `docs/IMPLEMENTATION_PLAN.md` for milestone scope and remaining work,
 `docs/DESIGN.md` for server semantics, and `docs/CLIENT_SPEC.md` for the
-client-facing contract. Passing the default tests does not yet constitute
-completion of the zram or physical-device acceptance gates.
+client-facing contract.
 
 ## Relationship to NBSS
 

@@ -27,7 +27,7 @@ func computeCHD(diskBytes uint64, diskID uint64, intervals []interval, targetP f
 	if totalSlots == 0 {
 		return 0
 	}
-	if targetP <= 0 || targetP > 1 {
+	if math.IsNaN(targetP) || targetP <= 0 || targetP > 1 {
 		targetP = 0.2
 	}
 	required := int(math.Ceil(targetP * float64(chdSamples)))

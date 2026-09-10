@@ -26,6 +26,11 @@ import (
 func rpcFixture(t *testing.T) (*Server, bsospb.BSOSClient) {
 	t.Helper()
 	s := &Server{disks: []*DeviceState{newTestDiskID(t, 1), newTestDiskID(t, 2)}, gate: newPoolGate(), maxPut: 256 << 20, chdTargetP: .2, stallTimeout: time.Second, gateFanoutLimit: time.Second}
+	return s, testRPCClient(t, s)
+}
+
+func testRPCClient(t *testing.T, s *Server) bsospb.BSOSClient {
+	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()
 	bsospb.RegisterBSOSServer(gs, s)
@@ -36,7 +41,7 @@ func rpcFixture(t *testing.T) (*Server, bsospb.BSOSClient) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cc.Close() })
-	return s, bsospb.NewBSOSClient(cc)
+	return bsospb.NewBSOSClient(cc)
 }
 func rpcPut(ctx context.Context, c bsospb.BSOSClient, fid, alias, size uint64, data []byte) error {
 	st, err := c.Put(ctx)
@@ -533,6 +538,7 @@ func TestStartupFailureClosesEarlierDevices(t *testing.T) {
 			}
 			before := count()
 			cfg := DefaultConfig()
+			cfg.ZramSnapshotDir = ""
 			cfg.PanPath = path
 			if server, err := NewServer(cfg); err == nil {
 				server.Close()
@@ -654,6 +660,7 @@ func TestNewServerRebuildsPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := DefaultConfig()
+	cfg.ZramSnapshotDir = ""
 	cfg.PanPath = path
 	s, err := NewServer(cfg)
 	if err != nil {

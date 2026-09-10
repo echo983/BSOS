@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"bsos/internal/blk"
 	"bsos/internal/pan"
 )
 
@@ -23,7 +24,7 @@ type flushOptions struct {
 
 func RunFlush(args []string) int {
 	opts := flushOptions{}
-	fs := flag.NewFlagSet("nbss zram flush", flag.ContinueOnError)
+	fs := flag.NewFlagSet("bsos zram flush", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&opts.panPath, "pan", "pan.json", "")
 	fs.StringVar(&opts.outDir, "out", "", "")
@@ -44,7 +45,7 @@ func RunFlush(args []string) int {
 	panFile, err := pan.Read(opts.panPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintln(os.Stderr, "E_PAN_NOT_FOUND: pan.json not found; run `nbss blk find` first")
+			fmt.Fprintln(os.Stderr, "E_PAN_NOT_FOUND: pan.json not found; run `bsos blk find` first")
 			return exitNotFound
 		}
 		fmt.Fprintf(os.Stderr, "E_PAN_READ_FAILED: %v\n", err)
@@ -73,7 +74,7 @@ func FlushDevices(devices []pan.Device, outDir string, logf Logf, errf Logf) err
 		if err != nil {
 			return err
 		}
-		outDir = filepath.Join(home, ".nbss_zram_snapshots")
+		outDir = filepath.Join(home, ".bsos_zram_snapshots")
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -123,6 +124,27 @@ func flushDevice(dev pan.Device, outDir string, logf Logf) error {
 	diskID := pan.NormalizeID(dev.DiskID)
 	if diskID == "" {
 		return fmt.Errorf("missing disk id")
+	}
+	f, err := os.Open(devicePath)
+	if err != nil {
+		return err
+	}
+	header := make([]byte, blk.HeaderBytes)
+	_, err = io.ReadFull(f, header)
+	f.Close()
+	if err != nil {
+		return err
+	}
+	h, err := blk.ParseHeader(header)
+	if err != nil {
+		return err
+	}
+	wantID, err := pan.ParseDiskID(dev.DiskID)
+	if err != nil {
+		return err
+	}
+	if h.DiskID != wantID || h.Version != blk.FormatVersion {
+		return fmt.Errorf("snapshot device identity/version does not match pan.json")
 	}
 
 	sumPath := filepath.Join(outDir, diskID+".sha256")

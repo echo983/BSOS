@@ -34,6 +34,7 @@ type Server struct {
 
 	stallTimeout    time.Duration
 	gateFanoutLimit time.Duration
+	degraded        bool
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -43,6 +44,17 @@ func NewServer(cfg Config) (*Server, error) {
 	panFile, err := pan.Read(cfg.PanPath)
 	if err != nil {
 		return nil, fmt.Errorf("read pan: %w", err)
+	}
+	originalPan := panFile
+	var warnings []error
+	if cfg.ZramSnapshotDir != "" {
+		panFile.Devices, warnings, err = zram.RestorePool(panFile.Devices, cfg.ZramSnapshotDir)
+		if err != nil {
+			return nil, fmt.Errorf("restore zram pool: %w", err)
+		}
+		for _, warning := range warnings {
+			log.Printf("bsosd: degraded zram tier: %v", warning)
+		}
 	}
 	if len(panFile.Devices) == 0 {
 		return nil, fmt.Errorf("no devices in %s", cfg.PanPath)
@@ -58,19 +70,7 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 	}()
 	for _, dev := range panFile.Devices {
-		if zram.IsZramDevicePath(dev.DevicePath) && cfg.ZramSnapshotDir != "" {
-			// docs/DESIGN.md §3.13: load this zram device's snapshot
-			// before opening it, folding NBSS's separate manual
-			// `zram load` + `blk find` steps into normal startup.
-			// Best-effort: a device that can't be loaded (no snapshot
-			// yet, or genuinely absent in this environment) is skipped,
-			// not fatal — the pool just runs without that tier until an
-			// operator investigates.
-			if _, err := zram.EnsureLoaded(dev.DevicePath, dev.DiskID, cfg.ZramSnapshotDir); err != nil {
-				log.Printf("bsosd: zram auto-load for %s: %v (skipping this device)", dev.DevicePath, err)
-				continue
-			}
-		}
+
 		diskID, err := pan.ParseDiskID(dev.DiskID)
 		if err != nil {
 			return nil, fmt.Errorf("parse disk id for %s: %w", dev.DevicePath, err)
@@ -97,9 +97,15 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("no usable devices after opening %s", cfg.PanPath)
 	}
 
+	if cfg.ZramSnapshotDir != "" {
+		if err := persistPoolMapping(cfg.PanPath, originalPan, panFile.Devices); err != nil {
+			return nil, fmt.Errorf("persist restored pool: %w", err)
+		}
+	}
 	opened = true
 	return &Server{
 		disks:           disks,
+		degraded:        len(warnings) > 0,
 		gate:            newPoolGate(),
 		maxPut:          cfg.MaxPutBytes,
 		smallFileBytes:  smallFileBytes(cfg.SmallFilePow2),
@@ -288,7 +294,7 @@ func (s *Server) Head(_ context.Context, req *bsospb.HeadRequest) (*bsospb.HeadR
 }
 
 func (s *Server) Health(_ context.Context, _ *bsospb.Empty) (*bsospb.HealthResponse, error) {
-	healthy := len(s.disks) > 0
+	healthy := len(s.disks) > 0 && !s.degraded
 	for _, d := range s.disks {
 		d.indexMu.RLock()
 		healthy = healthy && d.indexErr == nil

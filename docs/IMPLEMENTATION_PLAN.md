@@ -1,6 +1,6 @@
 # Implementation plan
 
-Status: milestones 1–3 implemented; milestone 4 in progress, following the `design-v0` milestone in
+Status: milestones 1–4 implemented; milestone 5 (Trim, fragmentation, Bonnie) next, following the `design-v0` milestone in
 `docs/DESIGN.md`. This document is about *how* to build what's already
 designed, not further design decisions — revise `docs/DESIGN.md` first
 if something here turns out to need an actual design change.
@@ -118,11 +118,17 @@ plan avoids debugging both at once.
    repairs above): against `/dev/sdb`, a
    fresh Put/Get round-trip still works end to end through the new
    orchestration, not just the unit tests in isolation.
-4. **Multi-disk pooling — in progress.** `multidisk.go`'s best-fit routing and zram
-   tiering, with the pool-wide gate now genuinely exercised across more
-   than one disk. Includes the startup auto-load of zram snapshots
-   (`docs/DESIGN.md` §3.13) replacing NBSS's manual `zram load`/`blk find`
-   sequence.
+4. **Multi-disk pooling — done.**
+   Best-fit routing, CHD reservation accounting, zram snapshot discovery,
+   cold-start empty-device allocation, restore validation, current-path
+   reconciliation and atomic pan.json updates are implemented. Missing or
+   broken zram tiers are logged and reflected in Health. Routing/recovery
+   tests and a real two-USB-disk Put/Get/alias/reopen run pass.
+   Real zram recovery gate (`TestRealZramRecovery`) passed in 4.20s on the
+   authorized Debian 13 VPS, and end-to-end service cold-start snapshot
+   discovery, decompress, restore, and range readback verified via `vps-smoke`.
+   See `MILESTONE_4_VALIDATION_2026-09-10.md` for reproducible commands and evidence.
+
 5. **Trim, fragmentation, Bonnie.** Port `trim.go`/`packed_table.go`/
    `fragmentation.go` (near-unchanged), wire up the `Bonnie` RPC.
 6. **One-hop alias (`alias_for`).** Deliberately its own milestone after

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,12 +57,23 @@ func parseSize(input string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if value > math.MaxUint64/multiplier {
+		return 0, fmt.Errorf("size overflow")
+	}
 	return value * multiplier, nil
 }
 
 func isZramPath(path string) bool {
 	base := filepath.Base(path)
-	return strings.HasPrefix(base, "zram")
+	if !strings.HasPrefix(base, "zram") || len(base) == 4 {
+		return false
+	}
+	for _, c := range base[4:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func IsZramDevicePath(path string) bool {
@@ -111,9 +123,9 @@ func resetZramDevice(devicePath string) error {
 	return writeSysfs(path, "1")
 }
 
-func hotAddWritable() bool {
+func hotAddAvailable() bool {
 	path := "/sys/class/zram-control/hot_add"
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return false
 	}
@@ -168,8 +180,10 @@ func hashDevice(path string, size uint64) ([32]byte, error) {
 	hasher := sha256.New()
 	reader := io.LimitReader(f, int64(size))
 	buf := make([]byte, 1024*1024)
-	if _, err := io.CopyBuffer(hasher, reader, buf); err != nil {
+	if n, err := io.CopyBuffer(hasher, reader, buf); err != nil {
 		return [32]byte{}, err
+	} else if uint64(n) != size {
+		return [32]byte{}, io.ErrUnexpectedEOF
 	}
 	var sum [32]byte
 	copy(sum[:], hasher.Sum(nil))
@@ -194,116 +208,43 @@ func readNBSSHeader(path string) error {
 	return err
 }
 
+// EnsureLoaded restores only into an empty device; a mismatching live device
+// belongs to another disk and must never be reset based on a stale path.
 func EnsureLoaded(devicePath, diskID, snapshotDir string) (bool, error) {
-	if !isZramPath(devicePath) {
+	if !IsZramDevicePath(devicePath) {
 		return false, fmt.Errorf("not a zram device: %s", devicePath)
 	}
-	if snapshotDir == "" {
-		return false, fmt.Errorf("snapshot dir required")
-	}
-	if _, err := os.Stat(devicePath); err != nil {
-		return false, err
-	}
-
-	wantID, err := pan.ParseDiskID(diskID)
+	id, err := pan.ParseDiskID(diskID)
 	if err != nil {
 		return false, err
 	}
-
-	headerOK := false
-	if err := readNBSSHeader(devicePath); err == nil {
-		f, err := os.Open(devicePath)
-		if err == nil {
-			defer f.Close()
-			buf := make([]byte, blk.HeaderBytes)
-			if _, err := io.ReadFull(f, buf); err == nil {
-				if header, err := blk.ParseHeader(buf); err == nil && header.DiskID == wantID {
-					headerOK = true
-				}
+	live, err := (kernelRecovery{}).devices()
+	if err != nil {
+		return false, err
+	}
+	for _, d := range live {
+		if d.DevicePath == devicePath {
+			liveID, _ := pan.ParseDiskID(d.DiskID)
+			if liveID == id {
+				return false, nil
 			}
+			return false, fmt.Errorf("zram device belongs to another disk")
 		}
 	}
-	if headerOK {
-		return false, nil
-	}
-
-	snapshotPath := filepath.Join(snapshotDir, pan.NormalizeID(diskID))
-	info, err := os.Stat(snapshotPath)
-	if err == nil {
-		if info.Size() <= 0 {
-			return false, fmt.Errorf("snapshot empty")
-		}
-		if err := loadSnapshotToDevice(devicePath, snapshotPath, uint64(info.Size())); err != nil {
-			return false, err
-		}
-	} else {
-		if !errors.Is(err, os.ErrNotExist) {
-			return false, err
-		}
-		zstPath := snapshotPath + ".zst"
-		if _, zstErr := os.Stat(zstPath); zstErr != nil {
-			return false, zstErr
-		}
-		size, _, metaErr := readSnapshotMeta(snapshotPath + ".sha256")
-		if metaErr != nil || size == 0 {
-			return false, fmt.Errorf("missing snapshot meta for %s", zstPath)
-		}
-		if err := loadSnapshotToDeviceCompressed(devicePath, zstPath, size); err != nil {
-			return false, err
-		}
-	}
-	if err := readNBSSHeader(devicePath); err != nil {
-		return false, fmt.Errorf("snapshot not nbss: %v", err)
-	}
-	f, err := os.Open(devicePath)
+	paths, err := discoverSnapshots(snapshotDir)
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
-	buf := make([]byte, blk.HeaderBytes)
-	if _, err := io.ReadFull(f, buf); err != nil {
-		return false, err
+	path, ok := paths[id]
+	if !ok {
+		return false, fmt.Errorf("snapshot missing for disk %d", id)
 	}
-	header, err := blk.ParseHeader(buf)
+	snap, err := validateSnapshot(path, id)
 	if err != nil {
 		return false, err
 	}
-	if header.DiskID != wantID {
-		return false, fmt.Errorf("disk id mismatch after load: got 0x%X want 0x%X", header.DiskID, wantID)
+	if err = (kernelRecovery{}).restore(devicePath, snap); err != nil {
+		return false, err
 	}
 	return true, nil
-}
-
-func loadSnapshotToDevice(devicePath, snapshotPath string, size uint64) error {
-	if err := resetZramDevice(devicePath); err != nil {
-		return err
-	}
-	if err := writeZramDiskSize(devicePath, size); err != nil {
-		return err
-	}
-
-	in, err := os.Open(snapshotPath)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(devicePath, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	buf := make([]byte, 1024*1024)
-	if _, err := io.CopyBuffer(out, in, buf); err != nil {
-		return err
-	}
-	return nil
-}
-
-func loadSnapshotToDeviceCompressed(devicePath, snapshotPath string, size uint64) error {
-	if err := resetZramDevice(devicePath); err != nil {
-		return err
-	}
-	return loadCompressed(devicePath, snapshotPath, size)
 }

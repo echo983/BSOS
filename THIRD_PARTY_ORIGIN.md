@@ -10,12 +10,13 @@ unchanged between NBSS and BSOS, per `docs/DESIGN.md` §5).
 |---|---|---|
 | `internal/blk/` | NBSS `internal/blk/` | Import paths rewritten from `nbss/internal/...` to `bsos/internal/...`; no other changes. |
 | `internal/pan/` | NBSS `internal/pan/` | Same. |
-| `internal/zram/` | NBSS `internal/zram/` | Same import-path rewrite; no other changes. `docs/DESIGN.md` §3.13's startup auto-load is new orchestration in `internal/daemon/server.go`, not a change to this package. |
+| `internal/zram/` | NBSS `internal/zram/` | Initially copied with import-path rewrites. BSOS now adds snapshot validation/recovery orchestration, corrects the hot_add read interface, checks device identity, and uses BSOS default paths; see the milestone 4 validation report. |
 
 Also ported, as logic (not files) rather than copied verbatim, per
 `docs/NBSS_REUSE_PLAN.md`: `internal/daemon/multidisk.go` (best-fit
 disk selection) and `internal/daemon/chd.go` (`computeCHD` and its
-helpers) reproduce NBSS's `internal/daemon` algorithms exactly, adapted
+helpers) follow NBSS's `internal/daemon` algorithms, with BSOS boundary checks for
+invalid sizes/probabilities and failed devices, adapted
 to this repo's own `interval`/`DeviceState` types rather than copied
 byte-for-byte, since NBSS's originals are entangled with types this
 repo's write path doesn't share (docs/DESIGN.md §3.3's two-phase model).

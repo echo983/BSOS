@@ -185,7 +185,7 @@ func resolveDiskID(idArg string, diskBytes uint64, devicePath string) (uint64, e
 	if idArg == "" || strings.EqualFold(idArg, "auto") {
 		return autoDiskID(diskBytes, devicePath)
 	}
-	parsed, err := strconv.ParseUint(idArg, 10, 64)
+	parsed, err := strconv.ParseUint(strings.TrimSpace(idArg), 0, 64)
 	if err != nil {
 		return 0, err
 	}

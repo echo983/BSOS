@@ -47,6 +47,6 @@ func DefaultConfig() Config {
 		WriteDispatchConcurrency: 64,
 		SmallFilePow2:            6,
 		ChdTargetP:               0.2,
-		ZramSnapshotDir:          "",
+		ZramSnapshotDir:          "~/.bsos_zram_snapshots",
 	}
 }

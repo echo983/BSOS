@@ -17,11 +17,10 @@ func smallFileBytes(pow2 int) uint64 {
 	if pow2 < 0 {
 		return 0
 	}
-	shift := 12 + pow2
-	if shift >= 63 {
+	if pow2 >= 51 {
 		return math.MaxUint64
 	}
-	return 1 << shift
+	return 1 << (12 + pow2)
 }
 
 func (s *Server) isSmallFile(size uint64) bool {
@@ -29,10 +28,16 @@ func (s *Server) isSmallFile(size uint64) bool {
 }
 
 func (s *Server) canWrite(disk *DeviceState, size uint64) bool {
-	if size == 0 {
+	if size == 0 || disk.diskBytes <= blk.GridStart {
 		return false
 	}
-	capacity := disk.diskBytes - blk.GridStart
+	disk.indexMu.RLock()
+	fault := disk.indexErr
+	disk.indexMu.RUnlock()
+	if fault != nil {
+		return false
+	}
+	capacity := (disk.diskBytes - blk.GridStart) / blk.SlotSize * blk.SlotSize
 	return size <= capacity
 }
 

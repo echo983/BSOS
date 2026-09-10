@@ -19,7 +19,7 @@ type loadOptions struct {
 
 func RunLoad(args []string) int {
 	opts := loadOptions{}
-	fs := flag.NewFlagSet("nbss zram load", flag.ContinueOnError)
+	fs := flag.NewFlagSet("bsos zram load", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&opts.dir, "dir", "", "")
 	fs.StringVar(&opts.diskID, "disk", "", "")
@@ -44,7 +44,7 @@ func RunLoad(args []string) int {
 			fmt.Fprintf(os.Stderr, "E_HOME: %v\n", err)
 			return exitIO
 		}
-		dir = filepath.Join(home, ".nbss_zram_snapshots")
+		dir = filepath.Join(home, ".bsos_zram_snapshots")
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		fmt.Fprintf(os.Stderr, "E_DIR: snapshot dir not found: %s\n", dir)
@@ -101,7 +101,7 @@ func RunLoad(args []string) int {
 		}
 	}
 
-	fmt.Println("OK: load complete (run `nbss blk find` to refresh pan.json)")
+	fmt.Println("OK: load complete (run `bsos blk find` to refresh pan.json)")
 	return exitOK
 }
 
@@ -117,7 +117,7 @@ func newZramAllocator() (*zramAllocator, error) {
 	}
 	return &zramAllocator{
 		free:      free,
-		canHotAdd: hotAddWritable(),
+		canHotAdd: hotAddAvailable(),
 	}, nil
 }
 
@@ -128,41 +128,28 @@ func (a *zramAllocator) next() (string, error) {
 		return dev, nil
 	}
 	if !a.canHotAdd {
-		return "", fmt.Errorf("zram hot_add not writable; create devices with modprobe zram num_devices=N")
+		return "", fmt.Errorf("zram hot_add unavailable; create devices with modprobe zram num_devices=N")
 	}
 	return addZramDevice()
 }
 
 func loadSnapshot(path string, alloc *zramAllocator) error {
-	info, err := os.Stat(path)
+	id, err := pan.ParseDiskID(strings.TrimSuffix(filepath.Base(path), ".zst"))
 	if err != nil {
 		return err
 	}
-	if info.Size() <= 0 {
-		return fmt.Errorf("snapshot empty")
-	}
-
-	devicePath, err := alloc.next()
+	snap, err := validateSnapshot(path, id)
 	if err != nil {
 		return err
 	}
-	size, err := snapshotSize(path)
+	device, err := alloc.next()
 	if err != nil {
 		return err
 	}
-	if strings.HasSuffix(path, ".zst") {
-		if err := loadCompressed(devicePath, path, size); err != nil {
-			return err
-		}
-	} else {
-		if err := loadRaw(devicePath, path, size); err != nil {
-			return err
-		}
+	if err = (kernelRecovery{}).restore(device, snap); err != nil {
+		return err
 	}
-	if err := readNBSSHeader(devicePath); err != nil {
-		return fmt.Errorf("not nbss: %v", err)
-	}
-	fmt.Printf("OK: loaded %s -> %s size=%d\n", filepath.Base(path), devicePath, size)
+	fmt.Printf("OK: loaded %s -> %s size=%d\n", filepath.Base(path), device, snap.size)
 	return nil
 }
 

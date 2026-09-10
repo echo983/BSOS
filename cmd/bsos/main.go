@@ -59,8 +59,8 @@ func printZramUsage() {
 	fmt.Println("  bsos zram load [flags]")
 	fmt.Println("Notes:")
 	fmt.Println("  zram requires root for device access")
-	fmt.Println("  bsosd itself auto-loads snapshots at startup when -zram-snapshot-dir")
-	fmt.Println("  is set (docs/DESIGN.md §3.13) - manual `zram load` is for standalone use")
+	fmt.Println("  bsosd auto-loads snapshots from ~/.bsos_zram_snapshots by default;")
+	fmt.Println("  set -zram-snapshot-dir to override, or an empty value to disable")
 }
 
 func runBlk(args []string) int {
