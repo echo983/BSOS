@@ -17,7 +17,8 @@ the Go client library (`pkg/client`), and basic CLI (`cmd/bsos`) — has passed 
 Routing/recovery tests, real two-disk verification, real zram host
 acceptance gate, and live daemon & CLI validation on Debian 13 VPS have passed. See [milestone 4 validation](docs/MILESTONE_4_VALIDATION_2026-09-10.md),
 [milestone 5 validation](docs/MILESTONE_5_VALIDATION_2026-09-10.md), [milestone 6 validation](docs/MILESTONE_6_VALIDATION_2026-09-10.md),
-[milestone 7 validation](docs/MILESTONE_7_VALIDATION_2026-09-10.md), and [milestone 8 & 9 validation](docs/MILESTONE_8_9_VALIDATION_2026-09-10.md).
+[milestone 7 validation](docs/MILESTONE_7_VALIDATION_2026-09-10.md), [milestone 8 & 9 validation](docs/MILESTONE_8_9_VALIDATION_2026-09-10.md),
+[remote E2E validation](docs/REMOTE_E2E_VALIDATION_2026-09-10.md), and [architecture evaluation report](docs/DESIGN_EVALUATION_2026-09-10.md).
 The tree also includes the foundation repairs described in
 [the foundation validation report](docs/FOUNDATION_VALIDATION_2026-09-10.md).
 See `docs/IMPLEMENTATION_PLAN.md` for milestone scope and remaining work,
