@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -59,6 +60,7 @@ type deviceFile interface {
 type DeviceState struct {
 	mu         sync.Mutex
 	file       deviceFile
+	directFile deviceFile // nil if O_DIRECT unavailable/unattempted; see OpenDevice
 	devicePath string
 	diskID     uint64
 	diskBytes  uint64
@@ -113,8 +115,21 @@ func OpenDevice(devicePath string, diskID uint64, ioConcurrency int) (*DeviceSta
 	if ioConcurrency <= 0 {
 		ioConcurrency = 64
 	}
+	// docs/DESIGN.md §3.3: writes use O_DIRECT when the host filesystem
+	// supports it, reads stay buffered. Never fatal — a device on a
+	// filesystem without O_DIRECT support (e.g. overlayfs) still serves
+	// correctly via the buffered fd, just without O_DIRECT's
+	// double-buffering avoidance.
+	var directFile deviceFile
+	if df, derr := openDirectFile(devicePath); derr != nil {
+		log.Printf("bsosd: O_DIRECT unavailable for %s, falling back to buffered writes: %v", devicePath, derr)
+	} else {
+		directFile = df
+		log.Printf("bsosd: opened %s with O_DIRECT for the write path", devicePath)
+	}
 	return &DeviceState{
 		file:       f,
+		directFile: directFile,
 		devicePath: devicePath,
 		diskID:     diskID,
 		diskBytes:  diskBytes,
@@ -128,6 +143,9 @@ func OpenDevice(devicePath string, diskID uint64, ioConcurrency int) (*DeviceSta
 }
 
 func (s *DeviceState) Close() error {
+	if s.directFile != nil {
+		_ = s.directFile.Close()
+	}
 	return s.file.Close()
 }
 
@@ -194,12 +212,17 @@ func (pw *PreparedWrite) WriteFromContext(ctx context.Context, r io.Reader) erro
 	}
 	defer release()
 
+	slotsNeeded := pw.iv.end - pw.iv.start + 1
+	total := slotsNeeded * blk.SlotSize
+
+	if pw.disk.directFile != nil {
+		return writeStreamDirect(pw.disk.directFile, pw.addr, pw.size, total, r)
+	}
+
 	if err := writeExact(pw.disk.file, pw.addr, pw.size, r); err != nil {
 		return err
 	}
-	slotsNeeded := pw.iv.end - pw.iv.start + 1
-	pad := slotsNeeded*blk.SlotSize - pw.size
-	if pad > 0 {
+	if pad := total - pw.size; pad > 0 {
 		if err := writeZeros(pw.disk.file, pw.addr+pw.size, pad); err != nil {
 			return fmt.Errorf("pad: %w", err)
 		}

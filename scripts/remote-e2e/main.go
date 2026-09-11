@@ -164,6 +164,41 @@ func main() {
 	log.Printf("  [PASS] Streamed 6 MiB Get from remote VPS in %v (%.2f MB/s), SHA-256=%x matched perfectly", getDuration, getSpeed, largeGetSHA)
 
 	// -------------------------------------------------------------
+	// Phase 3b: O_DIRECT Alignment-Stress Object (non-chunk-aligned
+	// remainder). Phase 3's 6 MiB object lands exactly on 1 MiB
+	// directChunkBytes boundaries (internal/daemon/directio.go) — the
+	// least interesting case for the server's O_DIRECT streaming
+	// aligned-chunk writer. This object is sized to deliberately straddle
+	// a chunk boundary with a non-trivial remainder, so a real O_DIRECT
+	// write on the remote VPS actually exercises the mixed
+	// real-bytes-plus-zero-pad chunk path, not just clean multiples.
+	// -------------------------------------------------------------
+	log.Printf("==> Phase 3b: O_DIRECT Alignment-Stress Object (2 MiB + 12345 B, non-chunk-aligned)...")
+	const directChunkBytes = 1 << 20
+	const stressSize = 2*directChunkBytes + 12345
+	stressData := make([]byte, stressSize)
+	_, _ = rand.Read(stressData)
+	copy(stressData, []byte(fmt.Sprintf("BSOS-WAN-ODirectStress-%d:", time.Now().UnixNano())))
+	stressSHA := sha256.Sum256(stressData)
+
+	stressRes, err := c.PutWithJumpRetry(ctx, stressData)
+	if err != nil {
+		log.Fatalf("[FAIL] streaming Put %d B alignment-stress object: %v", stressSize, err)
+	}
+	getStress, err := c.GetBytes(ctx, stressRes.FID)
+	if err != nil {
+		log.Fatalf("[FAIL] GetBytes alignment-stress object: %v", err)
+	}
+	if !bytes.Equal(getStress, stressData) {
+		log.Fatalf("[FAIL] alignment-stress object content mismatch!")
+	}
+	stressGetSHA := sha256.Sum256(getStress)
+	if stressGetSHA != stressSHA {
+		log.Fatalf("[FAIL] alignment-stress object SHA-256 mismatch!")
+	}
+	log.Printf("  [PASS] %d B object (2 chunks + non-aligned remainder) round-tripped through real O_DIRECT, SHA-256=%x matched perfectly", stressSize, stressGetSHA)
+
+	// -------------------------------------------------------------
 	// Phase 4: Conflict and Not-Found Handling across WAN
 	// -------------------------------------------------------------
 	log.Printf("==> Phase 4: Validating Remote Conflict & Not-Found Semantics...")
