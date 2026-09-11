@@ -71,10 +71,24 @@
    > 上面这段原文按当时状态如实保留，不做改写。
 3. zram 冷启动发现/准备设备、快照恢复及默认目录对齐仍属于进行中的
    里程碑 4；本轮没有用普通文件测试替代真实 zram 验收。
+
+   > **已解决（milestone 4，见 `docs/MILESTONE_4_VALIDATION_2026-09-10.md`）**：
+   > 已在真实 zram 主机（授权测试 VPS）上完成门禁验收，覆盖冷启动自动发现、
+   > 压缩快照恢复、sysfs 破坏性 reset 后的自动重载，SHA-256 全量校验通过。
 4. Packed/Trim 读取和重放还未接入 daemon；启动对其明确报不支持，
    不能把“磁盘字节格式相同”解释为已经能加载所有 NBSS 历史盘。
+
+   > **已解决（milestone 5，见 `docs/MILESTONE_5_VALIDATION_2026-09-10.md`）**：
+   > `replayIndex` 已支持识别打包锚点、加载解析打包表、恢复 `confirmed`/
+   > `packed` 映射；Trim 强制连续运行并有专门的故障注入与冷启动重放测试
+   > 覆盖。
 5. CHD 路由边界、zram 分层的完整矩阵以及两块 USB 盘实测尚未完成；
    这些条件满足前，里程碑 4 继续保持 in progress。
+
+   > **已解决（milestone 4，见 `docs/MILESTONE_4_VALIDATION_2026-09-10.md`）**：
+   > CHD/路由测试覆盖最小可容纳盘、无可信容量回退、zram 小对象优先、
+   > 阈值等号、大对象不进 zram-only 池、空池/满盘/pending-abort 等边界；
+   > 两块真实 USB 盘（SanDisk 57.3G、PHILIPS 7.5G）联调通过。
 
 这些限制不会被本轮通过的基础回归测试掩盖。后续先完成里程碑 4 的
 剩余验收，再推进 Trim/Bonnie 和客户端库。
