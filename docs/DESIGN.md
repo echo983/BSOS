@@ -1,8 +1,9 @@
 # BSOS Design (v0)
 
-Status: design consensus reached through discussion, not yet implemented.
-This document is the source of truth for that consensus; update it in
-place as decisions are revised.
+Status: design consensus reached through discussion; implementation
+complete (milestones 1–9, see `docs/IMPLEMENTATION_PLAN.md` and
+`README.md`). This document remains the source of truth for server
+semantics; update it in place as decisions are revised.
 
 ## 1. Scope and trust model
 

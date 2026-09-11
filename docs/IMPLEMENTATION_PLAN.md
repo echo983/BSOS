@@ -1,9 +1,11 @@
 # Implementation plan
 
-Status: milestones 1–4 implemented; milestone 5 (Trim, fragmentation, Bonnie) next, following the `design-v0` milestone in
-`docs/DESIGN.md`. This document is about *how* to build what's already
-designed, not further design decisions — revise `docs/DESIGN.md` first
-if something here turns out to need an actual design change.
+Status: milestones 1–9 complete (see `README.md` and the dated
+`MILESTONE_*_VALIDATION_2026-09-10.md` / `REMOTE_E2E_VALIDATION*.md`
+reports), following the `design-v0` milestone in `docs/DESIGN.md`. This
+document is about *how* to build what's already designed, not further
+design decisions — revise `docs/DESIGN.md` first if something here turns
+out to need an actual design change.
 
 ## 1. Concurrency test strategy
 

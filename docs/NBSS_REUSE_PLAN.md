@@ -1,8 +1,11 @@
 # Reuse plan against NBSS's codebase
 
-Status: first pass, at file/package granularity, not yet started.
-Verdicts assume the concurrency-model change in `docs/DESIGN.md` §3.3
-("Concurrency model: streaming writes are not atomic...").
+Status: executed — see `internal/blk`, `internal/daemon`, and
+`internal/zram` for the resulting code, with provenance recorded in
+`THIRD_PARTY_ORIGIN.md`. Verdicts below are kept as the historical record
+of the reuse decisions actually made; they assumed the concurrency-model
+change in `docs/DESIGN.md` §3.3 ("Concurrency model: streaming writes are
+not atomic...").
 
 Legend: **keep** (unchanged or near-unchanged) · **modify** (real edits,
 not a rewrite) · **rewrite** (existing file isn't a useful starting
@@ -68,9 +71,14 @@ computed an fid or whether the write that produced an entry was streamed.
   to a *different* disk) can't occur there. Lives at the `Server` level
   (the thing with visibility across all disks), most naturally alongside
   whatever remains of `server.go`'s orchestration, not inside `state.go`.
-- `directio.go`: **modify**. The aligned-chunk write loop itself is
-  reusable; its input changes from a fully-materialized `[]byte` to a
-  stream plus the internal re-alignment buffer described in §3.3.
+- `directio.go`: **modify — done** (`internal/daemon/directio.go`,
+  2026-09-11, see `docs/REMOTE_E2E_VALIDATION_ODIRECT_2026-09-11.md`).
+  The aligned-buffer mechanics (`alignedBuffer`, `writeAllAt`) carried
+  over near-verbatim; the outer write loop was rebuilt around streaming
+  from an `io.Reader` into a single reused aligned buffer instead of
+  slicing a fully-materialized `[]byte`, since the latter would have
+  reintroduced the whole-object RAM buffering §3.3's streaming Put was
+  built to eliminate.
 - `queue.go`: **drop.** Its whole value is HDD seek-time reduction
   (§3.12); on BSOS's SSD/NVMe target at this system's bounded scale, an
   address-sorted single-drain queue has no payoff and NVMe's native

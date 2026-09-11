@@ -64,6 +64,11 @@
 2. 目前采用 buffered I/O + Sync，尚未实现设计中的 O_DIRECT。
    每次提交同步的真实设备吞吐与延迟尚需测量；不再将其描述为已经具备
    原 NBSS 的 O_DIRECT 写路径。
+
+   > **已解决（2026-09-11）**：O_DIRECT 已接入主写入路径并在授权测试 VPS 上
+   > 完成真实验证（日志 + `/proc/<pid>/fdinfo` flags 位独立确认），见
+   > [`docs/REMOTE_E2E_VALIDATION_ODIRECT_2026-09-11.md`](REMOTE_E2E_VALIDATION_ODIRECT_2026-09-11.md)。
+   > 上面这段原文按当时状态如实保留，不做改写。
 3. zram 冷启动发现/准备设备、快照恢复及默认目录对齐仍属于进行中的
    里程碑 4；本轮没有用普通文件测试替代真实 zram 验收。
 4. Packed/Trim 读取和重放还未接入 daemon；启动对其明确报不支持，

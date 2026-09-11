@@ -21,6 +21,9 @@ acceptance gate, and live daemon & CLI validation on Debian 13 VPS have passed. 
 [remote E2E validation](docs/REMOTE_E2E_VALIDATION_2026-09-10.md), and [architecture evaluation report](docs/DESIGN_EVALUATION_2026-09-10.md).
 The tree also includes the foundation repairs described in
 [the foundation validation report](docs/FOUNDATION_VALIDATION_2026-09-10.md).
+Writes now use O_DIRECT (reads stay buffered), verified on real hardware
+and the test VPS — see
+[O_DIRECT validation](docs/REMOTE_E2E_VALIDATION_ODIRECT_2026-09-11.md).
 See `docs/IMPLEMENTATION_PLAN.md` for milestone scope and remaining work,
 `docs/DESIGN.md` for server semantics, and `docs/CLIENT_SPEC.md` for the
 client-facing contract.
