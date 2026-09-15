@@ -81,6 +81,7 @@ type fileConfig struct {
 	SmallFilePow2             *int     `toml:"small_file_pow2"`
 	ChdTargetP                *float64 `toml:"chd_target_p"`
 	ZramSnapshotDir           string   `toml:"zram_snapshot_dir"`
+	TrimInterval              string   `toml:"trim_interval"`
 	TrimIntervalSeconds       *int64   `toml:"trim_interval_seconds"`
 	TrimMinThresholdBytes     string   `toml:"trim_min_threshold_bytes"`
 	TrimMaxThresholdBytes     string   `toml:"trim_max_threshold_bytes"`
@@ -144,6 +145,16 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if file.ZramSnapshotDir != "" {
 		cfg.ZramSnapshotDir = expandHome(strings.TrimSpace(file.ZramSnapshotDir))
+	}
+	if strings.TrimSpace(file.TrimInterval) != "" {
+		dur, err := time.ParseDuration(strings.TrimSpace(file.TrimInterval))
+		if err != nil {
+			return Config{}, fmt.Errorf("trim_interval: %w", err)
+		}
+		if dur <= 0 {
+			return Config{}, fmt.Errorf("trim_interval must be positive")
+		}
+		cfg.TrimInterval = dur
 	}
 	if file.TrimIntervalSeconds != nil {
 		if *file.TrimIntervalSeconds <= 0 {

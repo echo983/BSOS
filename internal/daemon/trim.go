@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -563,6 +564,8 @@ func (s *DeviceState) maybeTrim() (err error) {
 	}
 	s.trimState.LastTrigger = true
 	s.trimState.LastRunAt = time.Now().UTC()
+	log.Printf("bsosd: trim starting for disk=0x%X device=%s: %d candidates (threshold=%d bytes, smallFiles=%d/%d)",
+		s.diskID, s.devicePath, len(candidates), threshold, smallFiles, totalFiles)
 
 	backupDir := "bsos_trim_backup"
 	if s.cfg.TrimTempDir != "" {
@@ -648,5 +651,7 @@ func (s *DeviceState) maybeTrim() (err error) {
 
 	s.trimState.LastPackedFiles = len(candidates)
 	s.trimState.LastSuccessAt = time.Now().UTC()
+	log.Printf("bsosd: trim succeeded for disk=0x%X device=%s: packed %d objects (container=0x%X, table=0x%X)",
+		s.diskID, s.devicePath, len(candidates), containerFID, tableFID)
 	return nil
 }
