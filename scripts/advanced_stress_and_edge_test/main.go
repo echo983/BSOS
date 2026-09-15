@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math/rand"
@@ -82,6 +83,7 @@ func main() {
 	defer c.Close()
 
 	ctx := context.Background()
+	runID := time.Now().UnixNano()
 
 	// ══════════════════════════════════════════════════════════════════════════
 	section("1. Max Put Limit & Upper Boundary Security")
@@ -94,7 +96,7 @@ func main() {
 			err = oversizeStream.Send(&bsospb.PutRequest{
 				Msg: &bsospb.PutRequest_Header{
 					Header: &bsospb.PutHeader{
-						Fid:       0x1122334455667788,
+						Fid:       uint64(runID),
 						TotalSize: maxPutLimit + 1,
 					},
 				},
@@ -114,11 +116,12 @@ func main() {
 		}
 
 		// 1.2 Store and readback a massive 200MB object (near upper threshold, testing multi-megabyte DirectIO streaming)
-		fmt.Printf("  Streaming 200 MB object to NVMe tier (testing high-memory stream buffer)...\n")
+		fmt.Printf("  Streaming fresh 200 MB object to NVMe tier (testing high-memory stream buffer)...\n")
 		var massiveBuf bytes.Buffer
 		massiveBuf.Grow(200 << 20)
 		chunk := make([]byte, 1<<20)
-		for i := range chunk {
+		binary.LittleEndian.PutUint64(chunk[:8], uint64(runID))
+		for i := 8; i < len(chunk); i++ {
 			chunk[i] = byte(i % 251)
 		}
 		for i := 0; i < 200; i++ {
@@ -129,12 +132,12 @@ func main() {
 		massiveFID := xxh3.Hash(massiveData)
 
 		putCtx, putCancel := context.WithTimeout(ctx, 3*time.Minute)
-		err = c.Put(putCtx, massiveFID, uint64(len(massiveData)), 0, bytes.NewReader(massiveData))
+		res, err := c.PutWithJumpRetry(putCtx, massiveData)
 		putCancel()
 		if err != nil {
 			fail("200 MB massive Put failed", err)
 		} else {
-			pass(fmt.Sprintf("200 MB massive Put succeeded (FID=0x%016X)", massiveFID))
+			pass(fmt.Sprintf("200 MB massive Put succeeded (FID=0x%016X, TargetFID=0x%016X)", res.FID, res.TargetFID))
 			// Readback and verify
 			getCtx, getCancel := context.WithTimeout(ctx, 3*time.Minute)
 			gotMassive, err := c.GetBytes(getCtx, massiveFID)
@@ -154,7 +157,7 @@ func main() {
 	// ══════════════════════════════════════════════════════════════════════════
 	{
 		// Declared 5MB, but client only sends 1MB then abruptly closes stream
-		truncatedFID := uint64(0xAABBCCDDEEFF0011)
+		truncatedFID := uint64(runID) ^ uint64(0xAABBCCDDEEFF0011)
 		truncStream, err := rawClient.Put(ctx)
 		if err != nil {
 			fail("Open truncStream", err)
@@ -194,8 +197,8 @@ func main() {
 	section("3. Connection Abort & Reservation Gate Cleanup")
 	// ══════════════════════════════════════════════════════════════════════════
 	{
-		// Start a write, then kill the underlying gRPC connection without closing the stream
-		abortFID := uint64(0x9988776655443322)
+		// Start a write with a fresh FID, then kill the underlying gRPC connection without closing the stream
+		abortFID := uint64(runID) ^ uint64(0x9988776655443322)
 		tempConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err == nil {
 			tempClient := bsospb.NewBSOSClient(tempConn)
@@ -216,15 +219,15 @@ func main() {
 				_ = tempConn.Close() // HARD CLOSE
 
 				// Wait a moment for server to detect connection reset and release pool gate
-				time.Sleep(200 * time.Millisecond)
+				time.Sleep(300 * time.Millisecond)
 
-				// Now re-attempt writing the full object properly with main client
+				// Now attempt writing a full new object properly with main client
 				fullData := make([]byte, 2<<20)
-				for i := range fullData {
+				binary.LittleEndian.PutUint64(fullData[:8], uint64(runID+1))
+				for i := 8; i < len(fullData); i++ {
 					fullData[i] = byte(i)
 				}
-				fullFID := xxh3.Hash(fullData)
-				err = c.Put(ctx, fullFID, uint64(len(fullData)), 0, bytes.NewReader(fullData))
+				_, err = c.PutWithJumpRetry(ctx, fullData)
 				if err == nil {
 					pass("Server cleanly released gate after client hard disconnect")
 				} else {
@@ -238,21 +241,21 @@ func main() {
 	section("4. Range Read Boundaries & OOB Edge Cases")
 	// ══════════════════════════════════════════════════════════════════════════
 	{
-		rangePayload := []byte("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()")
-		rFID, err := c.PutBytes(ctx, rangePayload)
+		rangePayload := []byte(fmt.Sprintf("range-test-%d-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%%^&*()", runID))
+		rFID, err := c.PutWithJumpRetry(ctx, rangePayload)
 		if err != nil {
-			fail("PutBytes for range test", err)
+			fail("PutWithJumpRetry for range test", err)
 		} else {
 			// 4.1 Valid interior range [10, 20)
-			got, err := c.GetBytes(ctx, rFID, client.Range{Start: 10, End: 20})
+			got, err := c.GetBytes(ctx, rFID.FID, client.Range{Start: 10, End: 20})
 			if err == nil && string(got) == string(rangePayload[10:20]) {
 				pass("Interior range [10, 20) matched")
 			} else {
 				fail("Interior range mismatch", err)
 			}
 
-			// 4.2 Start at offset 0, End to end of file (End=0)
-			got, err = c.GetBytes(ctx, rFID, client.Range{Start: 20, End: 0})
+			// 4.2 Start at offset 20, End to end of file (End=0)
+			got, err = c.GetBytes(ctx, rFID.FID, client.Range{Start: 20, End: 0})
 			if err == nil && string(got) == string(rangePayload[20:]) {
 				pass("Suffix range [20, end) matched")
 			} else {
@@ -260,7 +263,7 @@ func main() {
 			}
 
 			// 4.3 Range starting beyond object size (Start > size) -> should return empty or error, not panic
-			got, err = c.GetBytes(ctx, rFID, client.Range{Start: 1000, End: 2000})
+			got, err = c.GetBytes(ctx, rFID.FID, client.Range{Start: 10000, End: 20000})
 			if err == nil && len(got) == 0 || err != nil {
 				pass("OOB range start > size safely handled (no server panic)")
 			} else {
@@ -268,7 +271,7 @@ func main() {
 			}
 
 			// 4.4 Inverted range (Start > End) -> should handle gracefully without panic
-			_, _ = c.GetBytes(ctx, rFID, client.Range{Start: 30, End: 10})
+			_, _ = c.GetBytes(ctx, rFID.FID, client.Range{Start: 30, End: 10})
 			pass("Inverted range [30, 10) handled gracefully")
 		}
 	}
@@ -277,9 +280,10 @@ func main() {
 	section("5. Read-While-Writing (Dirty Read / Atomicity Isolation)")
 	// ══════════════════════════════════════════════════════════════════════════
 	{
-		// Client A starts a slow, multi-second upload
+		// Client A starts a slow, multi-second upload with a fresh FID
 		slowData := make([]byte, 8<<20)
-		for i := range slowData {
+		binary.LittleEndian.PutUint64(slowData[:8], uint64(runID+2))
+		for i := 8; i < len(slowData); i++ {
 			slowData[i] = byte(i % 127)
 		}
 		slowFID := xxh3.Hash(slowData)
@@ -310,7 +314,7 @@ func main() {
 						Chunk: slowData[i*chunkSz : (i+1)*chunkSz],
 					},
 				})
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(120 * time.Millisecond)
 			}
 			_, _ = stream.CloseAndRecv()
 		}()
@@ -352,13 +356,12 @@ func main() {
 		var totalOps int32
 		var opErrors int32
 
-		fmt.Printf("  Spawning %d concurrent workers executing mixed Put/Get/Head/Range operations...\n", numWorkers)
+		fmt.Printf("  Spawning %d concurrent workers executing mixed PutWithJumpRetry/Get/Head/Range operations...\n", numWorkers)
 
 		for w := 0; w < numWorkers; w++ {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()
-				// Each worker creates private client or uses shared connection
 				wClient, err := client.New(addr)
 				if err != nil {
 					atomic.AddInt32(&opErrors, 1)
@@ -366,37 +369,44 @@ func main() {
 				}
 				defer wClient.Close()
 
+				r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID*1000)))
 				for op := 0; op < opsPerWorker; op++ {
-					sz := rand.Intn(64*1024) + 1024
+					sz := r.Intn(64*1024) + 1024
 					data := make([]byte, sz)
-					rand.Read(data)
+					r.Read(data)
+					prefix := []byte(fmt.Sprintf("worker-%d-%d-%d:", workerID, op, time.Now().UnixNano()))
+					copy(data, prefix)
 					dataHash := sha256Hex(data)
 
-					// 1. Put
-					fid, err := wClient.PutBytes(ctx, data)
+					// 1. Put with collision-resilient jump retry
+					res, err := wClient.PutWithJumpRetry(ctx, data)
 					if err != nil {
+						fmt.Printf("    [worker %d op %d] Put error: %v\n", workerID, op, err)
 						atomic.AddInt32(&opErrors, 1)
 						continue
 					}
 
 					// 2. Head
-					headSz, err := wClient.Head(ctx, fid)
+					headSz, err := wClient.Head(ctx, res.FID)
 					if err != nil || headSz != uint64(sz) {
+						fmt.Printf("    [worker %d op %d] Head error (sz=%d vs %d): %v\n", workerID, op, headSz, sz, err)
 						atomic.AddInt32(&opErrors, 1)
 						continue
 					}
 
 					// 3. Get
-					retrieved, err := wClient.GetBytes(ctx, fid)
+					retrieved, err := wClient.GetBytes(ctx, res.FID)
 					if err != nil || sha256Hex(retrieved) != dataHash {
+						fmt.Printf("    [worker %d op %d] Get error (hash match=%v): %v\n", workerID, op, sha256Hex(retrieved) == dataHash, err)
 						atomic.AddInt32(&opErrors, 1)
 						continue
 					}
 
 					// 4. Range read
 					if sz > 100 {
-						_, err := wClient.GetBytes(ctx, fid, client.Range{Start: 10, End: 50})
+						_, err := wClient.GetBytes(ctx, res.FID, client.Range{Start: 10, End: 50})
 						if err != nil {
+							fmt.Printf("    [worker %d op %d] Range error: %v\n", workerID, op, err)
 							atomic.AddInt32(&opErrors, 1)
 							continue
 						}
