@@ -312,11 +312,18 @@ func TestClientPutWithJumpRetry(t *testing.T) {
 		t.Fatalf("targetData suffix mismatch: %v", targetData)
 	}
 
-	// 6. Test jump exhaustion when an already confirmed object is retried with jump retry
-	// (since alias_for cannot overwrite an existing confirmed object)
-	_, err = c.PutWithJumpRetry(ctx, basePayload, JumpOptions{MaxJumps: 2})
-	if err != ErrJumpExhausted {
-		t.Fatalf("expected ErrJumpExhausted on confirmed object, got %v", err)
+	// 6. Test idempotent re-upload: re-uploading basePayload (already stored)
+	// should return success with the same FID and JumpsTaken=0, not an error.
+	// "fid already registered" = idempotent success, not a collision requiring jumps.
+	idem, err := c.PutWithJumpRetry(ctx, basePayload, JumpOptions{MaxJumps: 2})
+	if err != nil {
+		t.Fatalf("expected idempotent success on re-upload of basePayload, got error: %v", err)
+	}
+	if idem.FID != baseFID {
+		t.Fatalf("idempotent re-upload: expected FID=0x%X, got 0x%X", baseFID, idem.FID)
+	}
+	if idem.JumpsTaken != 0 {
+		t.Fatalf("idempotent re-upload: expected JumpsTaken=0, got %d", idem.JumpsTaken)
 	}
 }
 

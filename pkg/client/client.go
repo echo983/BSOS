@@ -324,6 +324,26 @@ func (c *Client) PutWithJumpRetry(ctx context.Context, data []byte, opts ...Jump
 		return JumpResult{FID: fid}, err
 	}
 
+	// "fid already registered" means FID is already in the index — i.e., the
+	// exact same content is already durably stored (content-addressed: same
+	// FID ↔ same payload). This is an idempotent re-upload; return success.
+	// "extent already reserved" is a true disk-extent collision with a different
+	// object; in that case we proceed to the jump-retry loop below.
+	if isIdempotentConflict(err) {
+		return JumpResult{
+			FID:        fid,
+			TargetFID:  fid,
+			JumpsTaken: 0,
+		}, nil
+	}
+
+	return c.putWithJumpRetryCollision(ctx, data, fid, maxJumps)
+}
+
+// putWithJumpRetryCollision is the internal path used when a canonical put
+// fails due to a true disk-extent collision (i.e., a different object already
+// occupies the slot). It tries jump codes 1..maxJumps.
+func (c *Client) putWithJumpRetryCollision(ctx context.Context, data []byte, fid uint64, maxJumps int) (JumpResult, error) {
 	// Collision occurred: run the one-hop jump-retry loop
 	for jumpCode := 1; jumpCode <= maxJumps; jumpCode++ {
 		jumpData := make([]byte, len(data)+1)
@@ -396,6 +416,16 @@ func (c *Client) PutFileWithJumpRetry(ctx context.Context, localPath string, opt
 
 	if !IsConflict(err) {
 		return JumpResult{FID: fid}, err
+	}
+
+	// "fid already registered" = same file already stored, idempotent success.
+	// "extent already reserved" = true disk-extent collision, need to jump.
+	if isIdempotentConflict(err) {
+		return JumpResult{
+			FID:        fid,
+			TargetFID:  fid,
+			JumpsTaken: 0,
+		}, nil
 	}
 
 	// Collision occurred: run one-hop jump-retry loop using cloned hasher
@@ -596,6 +626,18 @@ func (c *Client) VerifyContent(ctx context.Context, fid uint64, expected []byte,
 // IsConflict returns true if err indicates a conflict (codes.AlreadyExists).
 func IsConflict(err error) bool {
 	return status.Code(err) == codes.AlreadyExists
+}
+
+// isIdempotentConflict returns true when the server rejected a Put because
+// the exact same FID is already registered (i.e., the object is already
+// durably stored). This is distinct from a true extent collision, where a
+// *different* object occupies the same disk slot; the server signals that
+// with message "extent already reserved".
+func isIdempotentConflict(err error) bool {
+	if !IsConflict(err) {
+		return false
+	}
+	return status.Convert(err).Message() == "fid already registered"
 }
 
 // IsNotFound returns true if err indicates the object was not found (codes.NotFound).
