@@ -26,8 +26,8 @@ func defaultAddr() string {
 
 func runPut(args []string) int {
 	fs := flag.NewFlagSet("bsos put", flag.ContinueOnError)
-	addr := fs.String("addr", defaultAddr(), "BSOS daemon address")
-	asJSON := fs.Bool("json", false, "output JSON")
+	addr := fs.String("addr", defaultAddr(), "BSOS daemon address (host:port)")
+	asJSON := fs.Bool("json", false, "output JSON metadata")
 	noJump := fs.Bool("no-jump", false, "disable automatic one-hop jump collision retry")
 	maxJumps := fs.Int("max-jumps", client.MaxJumpCode, "maximum jump attempts (1..255)")
 	atomicMode := fs.Bool("atomic", false, "force atomic single-object upload (payload must be <= 16MB)")
@@ -37,7 +37,31 @@ func runPut(args []string) int {
 	targetChunk := fs.Int("target-chunk", cdc.DefaultTargetSize, "FastCDC target chunk size in bytes")
 	maxChunk := fs.Int("max-chunk", cdc.DefaultMaxSize, "FastCDC maximum chunk size in bytes")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for Put operation")
+
+	fs.Usage = func() {
+		fmt.Println("Usage:")
+		fmt.Println("  bsos put [options] [file|-]")
+		fmt.Println()
+		fmt.Println("Description:")
+		fmt.Println("  Writes an object into BSOS content-addressed storage.")
+		fmt.Println("  By default, BSOS automatically dual-path routes based on payload size:")
+		fmt.Println("    - Small/Medium files (<= 16MB): Track 1 single-pass atomic upload directly into memory/NVMe.")
+		fmt.Println("    - Large files (> 16MB): Track 2 FastCDC content-defined chunking (4~32MB) with concurrent workers.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  bsos put photo.jpg")
+		fmt.Println("  bsos put --cdc large_archive.tar")
+		fmt.Println("  bsos put --atomic --json config.json")
+		fmt.Println("  cat dataset.bin | bsos put -")
+	}
+
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 
@@ -247,14 +271,36 @@ func runPut(args []string) int {
 
 func runGet(args []string) int {
 	fs := flag.NewFlagSet("bsos get", flag.ContinueOnError)
-	addr := fs.String("addr", defaultAddr(), "BSOS daemon address")
+	addr := fs.String("addr", defaultAddr(), "BSOS daemon address (host:port)")
 	rangeStr := fs.String("range", "", "optional byte range start-end (e.g. 0-1024, or 10-)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "timeout for Get operation")
+
+	fs.Usage = func() {
+		fmt.Println("Usage:")
+		fmt.Println("  bsos get [options] <fid> [output-file|-]")
+		fmt.Println()
+		fmt.Println("Description:")
+		fmt.Println("  Retrieves an object from BSOS content-addressed storage.")
+		fmt.Println("  Automatically detects whether the FID is an atomic object or a FastCDC manifest,")
+		fmt.Println("  transparently streaming or reassembling chunks on the fly.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  bsos get 0x1234567890abcdef output.bin")
+		fmt.Println("  bsos get -range 0-1048576 0x1234567890abcdef slice.bin")
+		fmt.Println("  bsos get 0x1234567890abcdef - | tar -xvf -")
+	}
+
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: bsos get [flags] <fid> [output-file]\n")
+		fs.Usage()
 		return 2
 	}
 
@@ -323,14 +369,29 @@ func runGet(args []string) int {
 
 func runHead(args []string) int {
 	fs := flag.NewFlagSet("bsos head", flag.ContinueOnError)
-	addr := fs.String("addr", defaultAddr(), "BSOS daemon address")
-	asJSON := fs.Bool("json", false, "output JSON")
+	addr := fs.String("addr", defaultAddr(), "BSOS daemon address (host:port)")
+	asJSON := fs.Bool("json", false, "output JSON metadata")
 	timeout := fs.Duration("timeout", 10*time.Second, "timeout for Head operation")
+
+	fs.Usage = func() {
+		fmt.Println("Usage:")
+		fmt.Println("  bsos head [options] <fid>")
+		fmt.Println()
+		fmt.Println("Description:")
+		fmt.Println("  Queries object existence and byte size without downloading payload.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: bsos head [flags] <fid>\n")
+		fs.Usage()
 		return 2
 	}
 
@@ -374,10 +435,25 @@ func runHead(args []string) int {
 
 func runBonnie(args []string) int {
 	fs := flag.NewFlagSet("bsos bonnie", flag.ContinueOnError)
-	addr := fs.String("addr", defaultAddr(), "BSOS daemon address")
-	asJSON := fs.Bool("json", false, "output JSON")
+	addr := fs.String("addr", defaultAddr(), "BSOS daemon address (host:port)")
+	asJSON := fs.Bool("json", false, "output JSON metadata")
 	timeout := fs.Duration("timeout", 10*time.Second, "timeout for Bonnie operation")
+
+	fs.Usage = func() {
+		fmt.Println("Usage:")
+		fmt.Println("  bsos bonnie [options]")
+		fmt.Println()
+		fmt.Println("Description:")
+		fmt.Println("  Queries the largest contiguous power-of-2 placement size currently allocatable in the active pool.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 
@@ -411,10 +487,25 @@ func runBonnie(args []string) int {
 
 func runHealth(args []string) int {
 	fs := flag.NewFlagSet("bsos health", flag.ContinueOnError)
-	addr := fs.String("addr", defaultAddr(), "BSOS daemon address")
+	addr := fs.String("addr", defaultAddr(), "BSOS daemon address (host:port)")
 	quiet := fs.Bool("quiet", false, "quiet mode (exit code only)")
 	timeout := fs.Duration("timeout", 5*time.Second, "timeout for Health check")
+
+	fs.Usage = func() {
+		fmt.Println("Usage:")
+		fmt.Println("  bsos health [options]")
+		fmt.Println()
+		fmt.Println("Description:")
+		fmt.Println("  Checks daemon reachability and underlying block/zram storage pool health.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 
@@ -472,19 +563,42 @@ func runManifest(args []string) int {
 
 func printManifestUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  bsos manifest inspect <manifest-fid> [flags]")
+	fmt.Println("  bsos manifest inspect [options] <manifest-fid>")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  inspect   Decode and inspect FastCDC FileManifest metadata and chunk topology")
 }
 
 func runManifestInspect(args []string) int {
 	fs := flag.NewFlagSet("bsos manifest inspect", flag.ContinueOnError)
-	addr := fs.String("addr", defaultAddr(), "BSOS daemon address")
-	asJSON := fs.Bool("json", false, "output JSON")
+	addr := fs.String("addr", defaultAddr(), "BSOS daemon address (host:port)")
+	asJSON := fs.Bool("json", false, "output JSON metadata")
 	timeout := fs.Duration("timeout", 10*time.Second, "timeout for inspect operation")
+
+	fs.Usage = func() {
+		fmt.Println("Usage:")
+		fmt.Println("  bsos manifest inspect [options] <manifest-fid>")
+		fmt.Println()
+		fmt.Println("Description:")
+		fmt.Println("  Decodes and displays the FileManifest recorded under manifest-fid,")
+		fmt.Println("  listing original size, content hash, filename, and all chunk descriptors.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  bsos manifest inspect 0x1234567890abcdef")
+		fmt.Println("  bsos manifest inspect -json 0x1234567890abcdef")
+	}
+
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: bsos manifest inspect [flags] <manifest-fid>\n")
+		fs.Usage()
 		return 2
 	}
 
