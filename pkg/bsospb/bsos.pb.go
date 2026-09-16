@@ -766,7 +766,7 @@ const file_proto_bsos_proto_rawDesc = "" +
 	"\x03Get\x12\x10.bsos.GetRequest\x1a\x11.bsos.GetResponse0\x01\x12-\n" +
 	"\x04Head\x12\x11.bsos.HeadRequest\x1a\x12.bsos.HeadResponse\x12+\n" +
 	"\x06Bonnie\x12\v.bsos.Empty\x1a\x14.bsos.BonnieResponse\x12+\n" +
-	"\x06Health\x12\v.bsos.Empty\x1a\x14.bsos.HealthResponseB0Z.github.com/echo983/BSOS/internal/daemon/bsospbb\x06proto3"
+	"\x06Health\x12\v.bsos.Empty\x1a\x14.bsos.HealthResponseB$Z\"github.com/echo983/BSOS/pkg/bsospbb\x06proto3"
 
 var (
 	file_proto_bsos_proto_rawDescOnce sync.Once

@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/pkg/bsospb"
 )
 
 var (

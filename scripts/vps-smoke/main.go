@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/echo983/BSOS/internal/blk"
-	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/pkg/bsospb"
 	"github.com/echo983/BSOS/internal/pan"
 	"github.com/echo983/BSOS/internal/zram"
 	"github.com/zeebo/xxh3"

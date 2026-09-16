@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/pkg/bsospb"
 	"github.com/echo983/BSOS/pkg/client"
 )
 

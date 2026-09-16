@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/echo983/BSOS/internal/blk"
-	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/pkg/bsospb"
 	"github.com/echo983/BSOS/internal/pan"
 	"github.com/zeebo/xxh3"
 	"google.golang.org/grpc/codes"

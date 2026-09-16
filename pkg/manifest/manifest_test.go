@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/pkg/bsospb"
 )
 
 func TestManifestEncodeDecode(t *testing.T) {

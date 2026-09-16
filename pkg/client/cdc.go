@@ -10,7 +10,7 @@ import (
 
 	"github.com/zeebo/xxh3"
 
-	"github.com/echo983/BSOS/internal/daemon/bsospb"
+	"github.com/echo983/BSOS/pkg/bsospb"
 	"github.com/echo983/BSOS/pkg/cdc"
 	"github.com/echo983/BSOS/pkg/manifest"
 )
