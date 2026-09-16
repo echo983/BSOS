@@ -15,6 +15,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "upload":
+		os.Exit(runUpload(os.Args[2:]))
 	case "put":
 		os.Exit(runPut(os.Args[2:]))
 	case "get":
