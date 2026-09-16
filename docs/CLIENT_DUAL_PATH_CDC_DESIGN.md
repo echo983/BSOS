@@ -144,8 +144,21 @@ message ChunkDescriptor {
 
 ### 5.2 清单的自包含与唯一根句柄（Root FID）
 1. 大文件上传完毕后，将 `FileManifest` 序列化（通常仅几 KB）；
-2. 调用 `PutAtomic` 存入 BSOS，返回的 `ManifestFID` 即为该大文件的**唯一全局句柄**；
-3. 任何持有 `ManifestFID` 的客户端都可以还原出原文件。
+2. 在序列化二进制数据头部附加 **5 字节 Magic Header**（`BSMN\x01` = `0x42 0x53 0x4D 0x4E 0x01`）；
+3. 调用 `PutAtomic` 存入 BSOS，返回的 `ManifestFID` 即为该大文件的**唯一全局句柄**；
+4. 任何持有 `ManifestFID` 的客户端都可以还原出原文件。
+
+### 5.3 Magic Header 与读取透明自动识别 (`bsos get`)
+为了保证上层用户和客户端调用体验的极简性，用户无需记忆某个 FID 是“小文件”还是“大文件清单”：
+```mermaid
+flowchart TD
+    UserGet[客户端执行 bsos get FID] --> Probe[探测对象头部 5 字节 Range: 0-5]
+    Probe --> CheckMagic{前 5 字节 == 'BSMN\x01' ?}
+    CheckMagic -->|是 匹配清单| DecodeManifest[解析 FileManifest 清单]
+    DecodeManifest --> StreamReassemble[流式预取分块并有序还原]
+    CheckMagic -->|否 普通原子对象| DirectStream[直接流式输出原始字节]
+```
+- **探测开销**：由于 Manifest 尺寸 `< 1MB` 且全部驻留在 **8GB zram 内存层**，探测请求在服务端是纯内存纳秒级响应，网络交互延迟仅为 1 个 RTT，对性能毫无感知影响。
 
 ---
 
@@ -160,11 +173,11 @@ sequenceDiagram
     participant BSOS as BSOS 存储池 (192.168.1.79)
 
     Client->>Engine: GetCDC(manifestFID, outWriter)
-    Engine->>BSOS: Get(manifestFID)
+    Engine->>BSOS: Get(manifestFID) [从 zram 极速读出清单]
     BSOS-->>Engine: 返回 FileManifest 二进制数据
     Engine->>Engine: 解析得到 N 个分块拓扑列表
     loop 并发预取流水线 (Prefetch Queue = 4)
-        Engine->>BSOS: 并发拉取 Chunk_i, Chunk_i+1
+        Engine->>BSOS: 并发拉取 Chunk_i, Chunk_i+1 [从 NVMe 读出]
         BSOS-->>Engine: 流式返回 16MB Chunk 数据
         Engine->>Client: 按顺序平滑写入 outWriter
     end
