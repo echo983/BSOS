@@ -1,6 +1,6 @@
 # BSOS Third-Party Client Developer Guide
 
-This guide provides a comprehensive reference for software engineers and systems developers integrating with **BSOS** (Bare Space Object Storage). It covers client architecture, the Go SDK, cross-language gRPC integration, streaming invariants, collision management, and command-line automation.
+This guide provides a comprehensive reference for software engineers and systems developers integrating with **BSOS** (Bare Space Object Storage). It covers client architecture, the official Go SDK, the Dual-Path & FastCDC chunking subsystem, cross-language gRPC integration, streaming invariants, collision management, and command-line automation.
 
 ---
 
@@ -35,7 +35,7 @@ func main() {
 
 	ctx := context.Background()
 
-	// Store an object
+	// Store an object (auto-routed: atomic single-pass for <=16MB, FastCDC for >16MB)
 	data := []byte("Hello, BSOS!")
 	res, err := c.PutWithJumpRetry(ctx, data)
 	if err != nil {
@@ -43,7 +43,7 @@ func main() {
 	}
 	fmt.Printf("Stored object: FID=0x%016x (jumped=%d)\n", res.FID, res.JumpsTaken)
 
-	// Read it back
+	// Read it back (GetAuto transparently handles atomic objects and CDC manifests)
 	content, err := c.GetBytes(ctx, res.FID)
 	if err != nil {
 		log.Fatal(err)
@@ -63,17 +63,22 @@ go install github.com/echo983/BSOS/cmd/bsos@latest
 Store and retrieve data:
 
 ```bash
-# Store data from file or pipe
+# Store small/medium file (auto atomic)
 echo "Hello Bare Space" | bsos put -
 # Output: 0x5a1811e74a584061
 
-# Query metadata
-bsos head 0x5a1811e74a584061
-# Output: fid: 0x5a1811e74a584061 size: 17 bytes
+# Store large file (auto FastCDC chunked)
+bsos put huge_dataset.tar
+# Output: 0x39b755dc5d19105d (manifest: 16 chunks, 0 deduped, 16 uploaded)
 
-# Read back
-bsos get 0x5a1811e74a584061
-# Output: Hello Bare Space
+# Inspect CDC chunk topology
+bsos manifest inspect 0x39b755dc5d19105d
+
+# Transparent retrieve (works for atomic and CDC files alike)
+bsos get 0x39b755dc5d19105d recovered.tar
+
+# Sparse range read (fetches only overlapping chunks)
+bsos get -range 10485760-26214400 0x39b755dc5d19105d slice.bin
 ```
 
 ---
@@ -86,13 +91,36 @@ $$\text{FID} = \text{xxh3\_64}(\text{payload})$$
 
 Clients calculate the FID before uploading. The server trusts this FID and maps it deterministically to physical disk space without maintaining centralized metadata or B-trees.
 
-### Critical Invariant: Pre-Declared `total_size`
-Unlike conventional filesystems or object stores that accept unbounded chunk streams, **BSOS requires `total_size` to be declared in the first message of the gRPC Put stream** (`PutHeader`).
+### Dual-Path Upload Architecture
 
-> [!IMPORTANT]
-> **Why `total_size` must be known upfront:**
-> The daemon uses `(fid, total_size)` to deterministically calculate the exact disk slot, verify allocation boundaries, and reserve raw disk extents in memory before reading a single data chunk.
-> If you are streaming dynamic output of unknown length (e.g. real-time video or on-the-fly compression), you must buffer the data or write it to a temporary file first to determine its exact byte length.
+BSOS implements an optimized dual-path storage pipeline:
+
+```
+                         [Payload Upload]
+                                 │
+                 ┌───────────────┴───────────────┐
+                 ▼ (<= 16 MB)                    ▼ (> 16 MB)
+         [Track 1: PutAtomic]             [Track 2: PutCDC]
+                 │                               │
+        ┌────────┴────────┐             ┌────────┴────────┐
+   os.ReadFile (1-Pass I/O)             FastCDC Chunker (4~32MB)
+   xxh3 内存秒算 FID                     Worker 并发并发上传 Chunks
+   直接 gRPC 流式提交 (无二次读盘)          提交 FileManifest 元数据对象
+```
+
+1. **Track 1 (`<= 16MB`): `PutAtomic` / `PutFileAtomic`**
+   - Single-pass memory loading via `os.ReadFile`.
+   - Computes XXH3 in RAM and streams directly, completely eliminating the two-pass disk read bottleneck.
+2. **Track 2 (`> 16MB`): `PutCDC` / `PutFileCDC`**
+   - FastCDC content-defined chunking (Min 4MB, Target 16MB, Max 32MB).
+   - High-throughput parallel upload across a configurable worker pool (default 8 workers).
+   - Generates a self-contained, content-addressed `FileManifest` object with `BSMN\x01` magic header.
+   - Provides fine-grained deduplication: modifying 64KB in a 100MB file only re-uploads the 1 mutated chunk (~95% bandwidth savings).
+
+### Critical Invariant: Pre-Declared `total_size`
+Unlike conventional filesystems that accept unbounded chunk streams, **BSOS requires `total_size` to be declared in the first message of the gRPC Put stream** (`PutHeader`).
+
+The daemon uses `(fid, total_size)` to deterministically calculate the exact disk slot, verify allocation boundaries, and reserve raw disk extents in memory before reading data chunks.
 
 ### One-Hop Jump Collision Handling
 Because object addresses are derived directly from hashes, two distinct objects of similar size could theoretically map to overlapping raw disk sectors (an extent collision).
@@ -103,103 +131,110 @@ BSOS resolves extent collisions with a **one-hop alias jump protocol**:
    $$\text{jumpData} = \text{payload} \mathbin{\Vert} \text{byte}(j)$$
    $$\text{jumpFID} = \text{xxh3\_64}(\text{jumpData})$$
 3. The client uploads `jumpData` specifying `header.alias_for = FID`.
-4. The daemon stores `jumpData` at `jumpFID` and writes a compact 16-byte alias record on disk mapping $\text{FID} \to \text{jumpFID}$.
-5. Subsequent read requests to $\text{FID}$ automatically resolve through the alias, strip the salt byte, and return the original data seamlessly.
-
-The client library (`PutWithJumpRetry`, `PutFileWithJumpRetry`, and `bsos put`) performs this jump procedure automatically.
-
-### Thread Safety & Concurrency
-- `*client.Client` is **safe for concurrent use by multiple goroutines**.
-- Applications should create **one persistent `Client` instance** at startup and reuse it across all requests and workers.
-- Avoid creating and destroying `Client` instances per request.
+4. The daemon stores `jumpData` at `jumpFID` and writes an alias pointer mapping $\text{FID} \to \text{jumpFID}$.
+5. Subsequent read requests to $\text{FID}$ automatically resolve through the alias, strip the salt byte, and return original data seamlessly.
 
 ---
 
-## 3. Go Client Reference (`pkg/client`)
+## 3. Public Go SDK Packages (`pkg/`)
 
-### Initializing the Client
+All reusable libraries are organized under public Go packages for easy third-party import:
+
+| Package | Import Path | Description |
+| :--- | :--- | :--- |
+| **`client`** | `github.com/echo983/BSOS/pkg/client` | Official BSOS client SDK (Dual-Path, CDC, Transparent Reads, Jump Retries). |
+| **`cdc`** | `github.com/echo983/BSOS/pkg/cdc` | Standalone FastCDC content-defined chunker engine with 4KB sector alignment. |
+| **`manifest`** | `github.com/echo983/BSOS/pkg/manifest` | `FileManifest` wire protocol encoder/decoder and `BSMN\x01` magic sniffer. |
+| **`bsospb`** | `github.com/echo983/BSOS/pkg/bsospb` | Public gRPC stubs and protobuf structs (`FileManifest`, `ChunkDescriptor`, etc.). |
+
+### Go Client API Reference (`pkg/client`)
+
+#### Initializing the Client
 
 ```go
-// Connect to a BSOS daemon using default settings (1 MiB streaming chunks)
+// Connect to a BSOS daemon using default settings
 c, err := client.New("127.0.0.1:9090")
 
 // Connect with custom options
 c, err := client.New("127.0.0.1:9090",
-    client.WithChunkSize(2 << 20), // 2 MiB chunk size
+    client.WithChunkSize(2 << 20), // 2 MiB streaming buffer
     client.WithDialOptions(grpc.WithBlock()),
 )
-
-// Wrap an existing grpc.ClientConn
-c := client.NewFromConn(conn)
+defer c.Close()
 ```
 
-### In-Memory Operations
+> [!NOTE]
+> `*client.Client` is **safe for concurrent use across multiple goroutines**. Create a single instance at application startup and share it across the process lifecycle.
+
+#### Upload Methods
 
 | Method | Signature | Description |
 | :--- | :--- | :--- |
-| `ComputeFID` | `ComputeFID(data []byte) uint64` | Computes 64-bit XXH3 hash of content. |
-| `PutBytes` | `PutBytes(ctx, data) (uint64, error)` | Direct write without collision retry. |
-| `PutWithJumpRetry` | `PutWithJumpRetry(ctx, data, ...JumpOptions) (JumpResult, error)` | Recommended: writes object with automatic jump retry. |
-| `GetBytes` | `GetBytes(ctx, fid, ...Range) ([]byte, error)` | Reads entire object or specified byte range. |
-| `Head` | `Head(ctx, fid) (uint64, error)` | Returns object size in bytes without retrieving payload. |
-| `VerifyContent` | `VerifyContent(ctx, fid, expected, ...VerifyOptions) (bool, error)` | Verifies stored content matches expected payload. |
+| `PutAtomic` | `PutAtomic(ctx, data, ...JumpOptions) (JumpResult, error)` | Single-pass atomic write for payloads `<= 16MB`. Returns `ErrPayloadTooLarge` if `> 16MB`. |
+| `PutFileAtomic` | `PutFileAtomic(ctx, path, ...JumpOptions) (JumpResult, error)` | Single-pass file upload for `<= 16MB` files without dual-read disk penalty. |
+| `PutCDC` | `PutCDC(ctx, r, totalSize, ...CDCOptions) (CDCResult, error)` | Slices input stream via FastCDC and uploads chunks in parallel. Commits `FileManifest`. |
+| `PutFileCDC` | `PutFileCDC(ctx, path, ...CDCOptions) (CDCResult, error)` | Streams and chunks large on-disk files via FastCDC with concurrent upload. |
+| `PutWithJumpRetry` | `PutWithJumpRetry(ctx, data, ...JumpOptions) (JumpResult, error)` | In-memory atomic write with automatic one-hop jump collision retry. |
+| `PutFileWithJumpRetry` | `PutFileWithJumpRetry(ctx, path, ...JumpOptions) (JumpResult, error)` | Auto-routing file upload with collision jump retry. |
 
-### Streaming & File Operations (Zero-RAM Overhead)
+#### Download & Inspection Methods
 
-For large files (gigabytes to tens of gigabytes), use file-oriented helpers to stream directly to/from disk without loading objects into memory:
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `GetAuto` | `GetAuto(ctx, fid, w, ...Range) error` | **Recommended**: Transparently sniffs manifest magic header; reassembles CDC files or streams atomic objects automatically. |
+| `GetBytes` | `GetBytes(ctx, fid, ...Range) ([]byte, error)` | Reads entire object or byte range into memory (transparently handles CDC and atomic). |
+| `GetCDC` | `GetCDC(ctx, manifestFID, w, ...Range) error` | Reassembles a CDC file or executes sparse range reads across chunks. |
+| `InspectManifest` | `InspectManifest(ctx, manifestFID) (*bsospb.FileManifest, error)` | Reads and decodes a `FileManifest`, returning chunk count, offsets, and hashes. |
+| `Head` | `Head(ctx, fid) (uint64, error)` | Returns object byte size without downloading payload. |
+| `VerifyContent` | `VerifyContent(ctx, fid, expected, ...VerifyOptions) (bool, error)` | Validates stored content against expected data with retry backoff. |
 
-```go
-// Precompute FID and size of an on-disk file
-fid, size, err := client.ComputeFileFID("/path/to/archive.tar")
+#### Cluster Status Methods
 
-// Upload file directly from disk with automatic collision retry
-res, err := c.PutFileWithJumpRetry(ctx, "/path/to/archive.tar")
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `Health` | `Health(ctx) (bool, error)` | Checks daemon reachability and NVMe/zram pool health. |
+| `Bonnie` | `Bonnie(ctx) (uint32, error)` | Queries largest contiguous power-of-2 placement size currently allocatable. |
 
-// Download object directly to local disk
-err := c.GetFile(ctx, res.FID, "/path/to/downloaded.tar")
+---
 
-// Download partial slice [start, end) directly to local disk
-err := c.GetFile(ctx, res.FID, "/path/to/slice.bin", client.Range{Start: 1024, End: 2048})
-```
+## 4. Standalone FastCDC Package (`pkg/cdc`)
 
-### Cluster Metrics & Status
-
-```go
-// Check daemon and storage pool health
-ok, err := c.Health(ctx)
-
-// Query Bonnie target capacity metric (returns ch_d_pow2)
-// Recommended max single-object size is (1 << chd) bytes
-chdPow2, err := c.Bonnie(ctx)
-maxObjectBytes := uint64(1) << chdPow2
-```
-
-### Error Classification Helpers
-
-Use built-in error inspectors instead of parsing gRPC status strings:
+Third-party projects requiring content-defined chunking independent of BSOS can import `pkg/cdc` directly:
 
 ```go
-if client.IsConflict(err) {
-    // gRPC codes.AlreadyExists (object FID exists or extent is occupied)
-}
-if client.IsNotFound(err) {
-    // gRPC codes.NotFound (requested FID does not exist)
-}
-if client.IsResourceExhausted(err) {
-    // gRPC codes.ResourceExhausted (disk or pool full)
-}
-if client.IsInvalidArgument(err) {
-    // gRPC codes.InvalidArgument (total_size=0, self-alias, etc.)
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/echo983/BSOS/pkg/cdc"
+)
+
+func main() {
+	f, _ := os.Open("data.tar")
+	defer f.Close()
+
+	// Initialize FastCDC chunker with default 4MB/16MB/32MB bounds
+	chunker, _ := cdc.NewChunker(f, cdc.DefaultOptions())
+
+	for {
+		chunk, err := chunker.Next()
+		if err == io.EOF {
+			break
+		}
+		fmt.Printf("Chunk FID: 0x%016x | Offset: %d | Size: %d bytes\n",
+			chunk.FID, chunk.Offset, chunk.Size)
+	}
 }
 ```
 
 ---
 
-## 4. Cross-Language Integration (Python, Rust, C++)
+## 5. Cross-Language Integration (Python, Rust, C++)
 
-BSOS uses standard gRPC (`proto/bsos.proto`). Clients in any language follow this protocol sequence:
-
-### Put Request Protocol Flow
+BSOS uses standard gRPC (`proto/bsos.proto`). Protobuf stubs can be generated for Python, Rust, C++, and other languages:
 
 ```
 Client                                      BSOS Daemon
@@ -213,57 +248,11 @@ Client                                      BSOS Daemon
   │<─ 5. PutResponse() ──────────────────────────│ (Success)
 ```
 
-> [!CAUTION]
-> **Check errors after EVERY chunk send:**
-> Per the BSOS transport specification, clients must check the stream status after every chunk sent. If the daemon rejects an upload (e.g. disk full, invalid header, unroutable extent), it terminates the stream immediately. Halting uploads on error saves network bandwidth and avoids wasted disk I/O.
-
-### XXH3 Reference Implementations
-- **Python**: `xxhash.xxh3_64_intdigest(data)` ([`examples/python/`](../examples/python/))
-- **Rust**: `xxhash_rust::xxh3::xxh3_64(data)`
-- **C/C++**: `XXH3_64bits(data, len)` from official `xxhash.h`
-
----
-
-## 5. Command-Line Automation Recipes
-
-### JSON Output & Scripting with `jq`
-
-`bsos put`, `bsos head`, and `bsos bonnie` support `-json` for scripting:
-
-```bash
-# Upload a file and extract the FID into a variable
-FID=$(bsos put -json /path/to/file.img | jq -r .fid)
-echo "Uploaded to FID: ${FID}"
-
-# Inspect object size via JSON
-SIZE=$(bsos head -json "${FID}" | jq -r .size)
-echo "Size: ${SIZE} bytes"
-```
-
-### Shell Pipe Streaming
-
-Stream stdin directly to BSOS, and retrieve via stdout:
-
-```bash
-# Backup a folder straight to BSOS
-tar -czf - ./my-directory | bsos put -json - > backup.json
-BACKUP_FID=$(jq -r .fid < backup.json)
-
-# Restore folder straight from BSOS
-bsos get "${BACKUP_FID}" - | tar -xzf -
-```
-
-### Media / Range Streaming
-
-BSOS supports partial byte reads via `-range`:
-
-```bash
-# Read bytes 0 through 1024
-bsos get -range 0-1024 0x5a1811e74a584061 partial.bin
-
-# Read from byte 1048576 (1 MiB) to the end of the object
-bsos get -range 1048576- 0x5a1811e74a584061 tail.bin
-```
+- **Python SDK**: See [`examples/python/client.py`](../examples/python/client.py)
+- **XXH3 Implementations**:
+  - Python: `xxhash.xxh3_64_intdigest(data)`
+  - Rust: `xxhash_rust::xxh3::xxh3_64(data)`
+  - C/C++: `XXH3_64bits(data, len)` from official `xxhash.h`
 
 ---
 
@@ -271,7 +260,8 @@ bsos get -range 1048576- 0x5a1811e74a584061 tail.bin
 
 Ready-to-run examples are provided in the repository:
 
+- [`examples/go/cdc_chunking/main.go`](../examples/go/cdc_chunking/main.go): FastCDC chunking, `PutCDC`, manifest inspection, `GetAuto`, and sparse range reads.
 - [`examples/go/basic/main.go`](../examples/go/basic/main.go): Basic Put/Get/Head/Bonnie operations.
-- [`examples/go/file_streaming/main.go`](../examples/go/file_streaming/main.go): Streaming multi-megabyte files without RAM buffering.
-- [`examples/python/client.py`](../examples/python/client.py): Standalone Python client with gRPC stubs.
+- [`examples/go/file_streaming/main.go`](../examples/go/file_streaming/main.go): Streaming multi-megabyte files with single-pass memory speed.
+- [`examples/python/client.py`](../examples/python/client.py): Python gRPC client with stubs.
 - [`examples/bash/pipeline.sh`](../examples/bash/pipeline.sh): Unix pipeline scripts with tarball streaming.

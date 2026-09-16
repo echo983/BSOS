@@ -7,24 +7,17 @@ is a client-facing contract; `docs/DESIGN.md` explains and justifies the
 server side. Where the two overlap, `docs/DESIGN.md` is authoritative on
 *why*, this document is authoritative on *what a client does*.
 
-## Scope boundary: BSOS is infrastructure, not an application layer
+## Scope boundary: Server Infrastructure vs Client-Side Chunking
 
-BSOS has no concept of files, directories, paths, versions, or any
-structure above "a byte string identified by its content hash." A
-client — including the Go library and CLI in this repo — must not
-invent one. In particular:
+BSOS server infrastructure has no concept of files, directories, paths, versions, or any
+structure above "a byte string identified by its content hash."
 
-- **No chunking or manifest support of any kind.** Splitting a large
-  logical object into multiple BSOS objects, and any format for
-  recording how to reassemble them, is an application-layer concern
-  entirely outside this project (`docs/DESIGN.md` §3.5). This is not
-  deferred pending a future manifest-format design — it is out of scope,
-  permanently, for the same reason the server doesn't own it: BSOS
-  doesn't know what a "file" is, and isn't the layer that should decide.
-- Bonnie's `ch_d_pow2` (§2.5 below) is documented here anyway, because a
-  *higher* layer that does implement chunking will need it — but this
-  document only specifies how to interpret the number, not how to use it
-  to build a manifest.
+To maintain high performance and clean separation of concerns:
+- **Server Simplicity**: The server daemon never owns chunking, reassembly, or file-level concepts (`docs/DESIGN.md` §3.5).
+- **Client-Side Dual-Path SDK (`pkg/client` & `pkg/cdc`)**: For clients and CLI tooling, BSOS provides client-side dual-path routing:
+  - **Track 1 (`PutAtomic`)**: Objects `<= 16MB` are written atomically with single-pass memory speed.
+  - **Track 2 (`PutCDC`)**: Objects `> 16MB` are sliced via FastCDC (4~32MB) on the client side, uploaded concurrently, and stored with a self-contained `FileManifest` (see `docs/CLIENT_DUAL_PATH_CDC_DESIGN.md`).
+- **Bonnie's `ch_d_pow2` (§2.5 below)**: Enables higher layers to query the daemon's contiguous placement threshold.
 
 ## 1. Identity
 

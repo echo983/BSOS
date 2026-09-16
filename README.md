@@ -30,17 +30,22 @@ client-facing contract.
 
 ## Developer Guide & Examples
 
-- **Developer Integration Handbook**: [docs/CLIENT_GUIDE.md](docs/CLIENT_GUIDE.md) — Comprehensive guide on Go SDK (`pkg/client`), cross-language gRPC integration, collision handling, and CLI automation.
+- **Developer Integration Handbook**: [docs/CLIENT_GUIDE.md](docs/CLIENT_GUIDE.md) — Comprehensive guide on Go SDK (`pkg/client`), Dual-Path & FastCDC architecture (`pkg/cdc`, `pkg/manifest`, `pkg/bsospb`), collision handling, and CLI automation.
 - **Runnable Examples**: [examples/](examples/)
+  - [Go FastCDC Chunking & Transparent Reassembly](examples/go/cdc_chunking/main.go)
   - [Go Basic Client](examples/go/basic/main.go)
-  - [Go Zero-RAM File Streaming](examples/go/file_streaming/main.go)
+  - [Go Single-Pass File Streaming](examples/go/file_streaming/main.go)
   - [Python Client with gRPC](examples/python/client.py)
   - [Bash Pipeline Automation](examples/bash/pipeline.sh)
 
 ### Quick Go Import
 
 ```bash
+# Full Go Client SDK (Dual-path, FastCDC, transparent reads)
 go get github.com/echo983/BSOS/pkg/client
+
+# Standalone FastCDC content-defined chunker
+go get github.com/echo983/BSOS/pkg/cdc
 ```
 
 ### Quick CLI Install
