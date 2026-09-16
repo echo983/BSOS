@@ -547,6 +547,166 @@ func (x *HealthResponse) GetOk() bool {
 	return false
 }
 
+type ChunkDescriptor struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Fid           uint64                 `protobuf:"varint,1,opt,name=fid,proto3" json:"fid,omitempty"`                                 // chunk logical FID (xxh3_64)
+	TargetFid     uint64                 `protobuf:"varint,2,opt,name=target_fid,json=targetFid,proto3" json:"target_fid,omitempty"`    // chunk physical FID (non-zero if jumped)
+	Offset        uint64                 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`                           // byte offset within original file
+	Size          uint64                 `protobuf:"varint,4,opt,name=size,proto3" json:"size,omitempty"`                               // chunk byte length
+	JumpsTaken    uint32                 `protobuf:"varint,5,opt,name=jumps_taken,json=jumpsTaken,proto3" json:"jumps_taken,omitempty"` // number of jumps taken (0 = direct)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChunkDescriptor) Reset() {
+	*x = ChunkDescriptor{}
+	mi := &file_proto_bsos_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChunkDescriptor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChunkDescriptor) ProtoMessage() {}
+
+func (x *ChunkDescriptor) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_bsos_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChunkDescriptor.ProtoReflect.Descriptor instead.
+func (*ChunkDescriptor) Descriptor() ([]byte, []int) {
+	return file_proto_bsos_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ChunkDescriptor) GetFid() uint64 {
+	if x != nil {
+		return x.Fid
+	}
+	return 0
+}
+
+func (x *ChunkDescriptor) GetTargetFid() uint64 {
+	if x != nil {
+		return x.TargetFid
+	}
+	return 0
+}
+
+func (x *ChunkDescriptor) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ChunkDescriptor) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *ChunkDescriptor) GetJumpsTaken() uint32 {
+	if x != nil {
+		return x.JumpsTaken
+	}
+	return 0
+}
+
+type FileManifest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Version         uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`                                          // manifest format version (currently 1)
+	TotalSize       uint64                 `protobuf:"varint,2,opt,name=total_size,json=totalSize,proto3" json:"total_size,omitempty"`                     // total original file size in bytes
+	FullContentHash uint64                 `protobuf:"varint,3,opt,name=full_content_hash,json=fullContentHash,proto3" json:"full_content_hash,omitempty"` // xxh3_64 of the entire reassembled file
+	Filename        string                 `protobuf:"bytes,4,opt,name=filename,proto3" json:"filename,omitempty"`                                         // optional original filename
+	ChunkTargetSize uint64                 `protobuf:"varint,5,opt,name=chunk_target_size,json=chunkTargetSize,proto3" json:"chunk_target_size,omitempty"` // configured CDC target chunk size
+	Chunks          []*ChunkDescriptor     `protobuf:"bytes,6,rep,name=chunks,proto3" json:"chunks,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *FileManifest) Reset() {
+	*x = FileManifest{}
+	mi := &file_proto_bsos_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FileManifest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FileManifest) ProtoMessage() {}
+
+func (x *FileManifest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_bsos_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FileManifest.ProtoReflect.Descriptor instead.
+func (*FileManifest) Descriptor() ([]byte, []int) {
+	return file_proto_bsos_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *FileManifest) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *FileManifest) GetTotalSize() uint64 {
+	if x != nil {
+		return x.TotalSize
+	}
+	return 0
+}
+
+func (x *FileManifest) GetFullContentHash() uint64 {
+	if x != nil {
+		return x.FullContentHash
+	}
+	return 0
+}
+
+func (x *FileManifest) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *FileManifest) GetChunkTargetSize() uint64 {
+	if x != nil {
+		return x.ChunkTargetSize
+	}
+	return 0
+}
+
+func (x *FileManifest) GetChunks() []*ChunkDescriptor {
+	if x != nil {
+		return x.Chunks
+	}
+	return nil
+}
+
 var File_proto_bsos_proto protoreflect.FileDescriptor
 
 const file_proto_bsos_proto_rawDesc = "" +
@@ -584,13 +744,29 @@ const file_proto_bsos_proto_rawDesc = "" +
 	"\x0eBonnieResponse\x12\x1a\n" +
 	"\tch_d_pow2\x18\x01 \x01(\rR\achDPow2\" \n" +
 	"\x0eHealthResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok2\xeb\x01\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x8f\x01\n" +
+	"\x0fChunkDescriptor\x12\x10\n" +
+	"\x03fid\x18\x01 \x01(\x04R\x03fid\x12\x1d\n" +
+	"\n" +
+	"target_fid\x18\x02 \x01(\x04R\ttargetFid\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x04R\x06offset\x12\x12\n" +
+	"\x04size\x18\x04 \x01(\x04R\x04size\x12\x1f\n" +
+	"\vjumps_taken\x18\x05 \x01(\rR\n" +
+	"jumpsTaken\"\xea\x01\n" +
+	"\fFileManifest\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1d\n" +
+	"\n" +
+	"total_size\x18\x02 \x01(\x04R\ttotalSize\x12*\n" +
+	"\x11full_content_hash\x18\x03 \x01(\x04R\x0ffullContentHash\x12\x1a\n" +
+	"\bfilename\x18\x04 \x01(\tR\bfilename\x12*\n" +
+	"\x11chunk_target_size\x18\x05 \x01(\x04R\x0fchunkTargetSize\x12-\n" +
+	"\x06chunks\x18\x06 \x03(\v2\x15.bsos.ChunkDescriptorR\x06chunks2\xeb\x01\n" +
 	"\x04BSOS\x12,\n" +
 	"\x03Put\x12\x10.bsos.PutRequest\x1a\x11.bsos.PutResponse(\x01\x12,\n" +
 	"\x03Get\x12\x10.bsos.GetRequest\x1a\x11.bsos.GetResponse0\x01\x12-\n" +
 	"\x04Head\x12\x11.bsos.HeadRequest\x1a\x12.bsos.HeadResponse\x12+\n" +
 	"\x06Bonnie\x12\v.bsos.Empty\x1a\x14.bsos.BonnieResponse\x12+\n" +
-	"\x06Health\x12\v.bsos.Empty\x1a\x14.bsos.HealthResponseB\x1dZ\x1bbsos/internal/daemon/bsospbb\x06proto3"
+	"\x06Health\x12\v.bsos.Empty\x1a\x14.bsos.HealthResponseB0Z.github.com/echo983/BSOS/internal/daemon/bsospbb\x06proto3"
 
 var (
 	file_proto_bsos_proto_rawDescOnce sync.Once
@@ -604,36 +780,39 @@ func file_proto_bsos_proto_rawDescGZIP() []byte {
 	return file_proto_bsos_proto_rawDescData
 }
 
-var file_proto_bsos_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_proto_bsos_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_bsos_proto_goTypes = []any{
-	(*PutHeader)(nil),      // 0: bsos.PutHeader
-	(*PutRequest)(nil),     // 1: bsos.PutRequest
-	(*PutResponse)(nil),    // 2: bsos.PutResponse
-	(*GetRequest)(nil),     // 3: bsos.GetRequest
-	(*GetResponse)(nil),    // 4: bsos.GetResponse
-	(*HeadRequest)(nil),    // 5: bsos.HeadRequest
-	(*HeadResponse)(nil),   // 6: bsos.HeadResponse
-	(*Empty)(nil),          // 7: bsos.Empty
-	(*BonnieResponse)(nil), // 8: bsos.BonnieResponse
-	(*HealthResponse)(nil), // 9: bsos.HealthResponse
+	(*PutHeader)(nil),       // 0: bsos.PutHeader
+	(*PutRequest)(nil),      // 1: bsos.PutRequest
+	(*PutResponse)(nil),     // 2: bsos.PutResponse
+	(*GetRequest)(nil),      // 3: bsos.GetRequest
+	(*GetResponse)(nil),     // 4: bsos.GetResponse
+	(*HeadRequest)(nil),     // 5: bsos.HeadRequest
+	(*HeadResponse)(nil),    // 6: bsos.HeadResponse
+	(*Empty)(nil),           // 7: bsos.Empty
+	(*BonnieResponse)(nil),  // 8: bsos.BonnieResponse
+	(*HealthResponse)(nil),  // 9: bsos.HealthResponse
+	(*ChunkDescriptor)(nil), // 10: bsos.ChunkDescriptor
+	(*FileManifest)(nil),    // 11: bsos.FileManifest
 }
 var file_proto_bsos_proto_depIdxs = []int32{
-	0, // 0: bsos.PutRequest.header:type_name -> bsos.PutHeader
-	1, // 1: bsos.BSOS.Put:input_type -> bsos.PutRequest
-	3, // 2: bsos.BSOS.Get:input_type -> bsos.GetRequest
-	5, // 3: bsos.BSOS.Head:input_type -> bsos.HeadRequest
-	7, // 4: bsos.BSOS.Bonnie:input_type -> bsos.Empty
-	7, // 5: bsos.BSOS.Health:input_type -> bsos.Empty
-	2, // 6: bsos.BSOS.Put:output_type -> bsos.PutResponse
-	4, // 7: bsos.BSOS.Get:output_type -> bsos.GetResponse
-	6, // 8: bsos.BSOS.Head:output_type -> bsos.HeadResponse
-	8, // 9: bsos.BSOS.Bonnie:output_type -> bsos.BonnieResponse
-	9, // 10: bsos.BSOS.Health:output_type -> bsos.HealthResponse
-	6, // [6:11] is the sub-list for method output_type
-	1, // [1:6] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0,  // 0: bsos.PutRequest.header:type_name -> bsos.PutHeader
+	10, // 1: bsos.FileManifest.chunks:type_name -> bsos.ChunkDescriptor
+	1,  // 2: bsos.BSOS.Put:input_type -> bsos.PutRequest
+	3,  // 3: bsos.BSOS.Get:input_type -> bsos.GetRequest
+	5,  // 4: bsos.BSOS.Head:input_type -> bsos.HeadRequest
+	7,  // 5: bsos.BSOS.Bonnie:input_type -> bsos.Empty
+	7,  // 6: bsos.BSOS.Health:input_type -> bsos.Empty
+	2,  // 7: bsos.BSOS.Put:output_type -> bsos.PutResponse
+	4,  // 8: bsos.BSOS.Get:output_type -> bsos.GetResponse
+	6,  // 9: bsos.BSOS.Head:output_type -> bsos.HeadResponse
+	8,  // 10: bsos.BSOS.Bonnie:output_type -> bsos.BonnieResponse
+	9,  // 11: bsos.BSOS.Health:output_type -> bsos.HealthResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_proto_bsos_proto_init() }
@@ -651,7 +830,7 @@ func file_proto_bsos_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_bsos_proto_rawDesc), len(file_proto_bsos_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

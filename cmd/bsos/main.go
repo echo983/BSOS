@@ -19,6 +19,8 @@ func main() {
 		os.Exit(runPut(os.Args[2:]))
 	case "get":
 		os.Exit(runGet(os.Args[2:]))
+	case "manifest":
+		os.Exit(runManifest(os.Args[2:]))
 	case "head":
 		os.Exit(runHead(os.Args[2:]))
 	case "bonnie":
@@ -106,8 +108,9 @@ func runBlk(args []string) int {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  bsos put [flags] [file|-]       Write object and output FID (auto-retries collisions via jump)")
-	fmt.Println("  bsos get [flags] <fid> [file|-] Retrieve object (supports -range)")
+	fmt.Println("  bsos put [flags] [file|-]       Write object (auto-routes <=16MB atomic / >16MB FastCDC)")
+	fmt.Println("  bsos get [flags] <fid> [file|-] Retrieve object (transparent atomic/CDC, supports -range)")
+	fmt.Println("  bsos manifest inspect <fid>     Inspect CDC file manifest and chunk topology")
 	fmt.Println("  bsos head [flags] <fid>         Inspect object size and existence")
 	fmt.Println("  bsos bonnie [flags]             Query largest single-object placement estimate")
 	fmt.Println("  bsos health [flags]             Check daemon and pool health")

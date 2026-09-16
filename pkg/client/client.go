@@ -25,6 +25,9 @@ const (
 	// chunk size recommended and implemented by BSOS daemons.
 	DefaultChunkSize = 1 << 20
 
+	// MaxAtomicPayloadSize is 16 MiB, the upper limit for single-pass atomic objects.
+	MaxAtomicPayloadSize = 16 << 20
+
 	// MaxJumpCode is the upper bound of the 1-byte jump code space (1..255).
 	MaxJumpCode = 255
 )
@@ -32,6 +35,9 @@ const (
 // ErrJumpExhausted is returned when all jump codes in 1..255 (or configured limit)
 // produce a conflict.
 var ErrJumpExhausted = errors.New("jump retry exhausted: all jump codes collided")
+
+// ErrPayloadTooLarge is returned when PutAtomic is called with data exceeding MaxAtomicPayloadSize (16MB).
+var ErrPayloadTooLarge = errors.New("bsos client: payload exceeds atomic 16MB threshold; use PutCDC instead")
 
 // Client interacts with a BSOS daemon over gRPC.
 //
@@ -288,6 +294,8 @@ type JumpResult struct {
 	TargetFID uint64
 	// JumpsTaken is 0 for direct placement, or 1..255 indicating the jump code used.
 	JumpsTaken int
+	// IsDuplicate indicates whether the object already existed in storage (deduplicated).
+	IsDuplicate bool
 }
 
 // JumpOptions configures collision retry behavior.
@@ -314,9 +322,10 @@ func (c *Client) PutWithJumpRetry(ctx context.Context, data []byte, opts ...Jump
 	err := c.Put(ctx, fid, uint64(len(data)), 0, bytes.NewReader(data))
 	if err == nil {
 		return JumpResult{
-			FID:        fid,
-			TargetFID:  fid,
-			JumpsTaken: 0,
+			FID:         fid,
+			TargetFID:   fid,
+			JumpsTaken:  0,
+			IsDuplicate: false,
 		}, nil
 	}
 
@@ -331,9 +340,10 @@ func (c *Client) PutWithJumpRetry(ctx context.Context, data []byte, opts ...Jump
 	// object; in that case we proceed to the jump-retry loop below.
 	if isIdempotentConflict(err) {
 		return JumpResult{
-			FID:        fid,
-			TargetFID:  fid,
-			JumpsTaken: 0,
+			FID:         fid,
+			TargetFID:   fid,
+			JumpsTaken:  0,
+			IsDuplicate: true,
 		}, nil
 	}
 
@@ -367,22 +377,46 @@ func (c *Client) putWithJumpRetryCollision(ctx context.Context, data []byte, fid
 	return JumpResult{FID: fid, JumpsTaken: maxJumps}, ErrJumpExhausted
 }
 
-// PutFileWithJumpRetry streams an on-disk file to the BSOS daemon with automatic
-// collision handling. If a direct write produces a conflict, it probes jump codes
-// in 1..MaxJumps, streaming the file payload appended with the 1-byte jump code.
-func (c *Client) PutFileWithJumpRetry(ctx context.Context, localPath string, opts ...JumpOptions) (JumpResult, error) {
-	maxJumps := MaxJumpCode
-	if len(opts) > 0 && opts[0].MaxJumps > 0 {
-		maxJumps = min(opts[0].MaxJumps, MaxJumpCode)
+// PutAtomic uploads an in-memory object up to 16 MiB with single-pass memory speed.
+// Returns ErrPayloadTooLarge if len(data) > MaxAtomicPayloadSize.
+func (c *Client) PutAtomic(ctx context.Context, data []byte, opts ...JumpOptions) (JumpResult, error) {
+	if len(data) > MaxAtomicPayloadSize {
+		return JumpResult{}, ErrPayloadTooLarge
 	}
+	return c.PutWithJumpRetry(ctx, data, opts...)
+}
 
-	f, err := os.Open(localPath)
+// PutFileAtomic uploads a local file up to 16 MiB using single-pass in-memory reading and AVX2 hashing.
+// Returns ErrPayloadTooLarge if the file size exceeds MaxAtomicPayloadSize.
+func (c *Client) PutFileAtomic(ctx context.Context, localPath string, opts ...JumpOptions) (JumpResult, error) {
+	stat, err := os.Stat(localPath)
 	if err != nil {
-		return JumpResult{}, fmt.Errorf("bsos client: open file %s: %w", localPath, err)
+		return JumpResult{}, fmt.Errorf("bsos client: stat file %s: %w", localPath, err)
 	}
-	defer f.Close()
+	if stat.IsDir() {
+		return JumpResult{}, fmt.Errorf("bsos client: %s is a directory", localPath)
+	}
+	size := stat.Size()
+	if size == 0 {
+		return JumpResult{}, fmt.Errorf("bsos client: empty file %s not allowed (total_size must be > 0)", localPath)
+	}
+	if size > MaxAtomicPayloadSize {
+		return JumpResult{}, ErrPayloadTooLarge
+	}
 
-	stat, err := f.Stat()
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return JumpResult{}, fmt.Errorf("bsos client: read file %s: %w", localPath, err)
+	}
+
+	return c.PutWithJumpRetry(ctx, data, opts...)
+}
+
+// PutFileWithJumpRetry streams an on-disk file to the BSOS daemon with automatic
+// collision handling. For files <= 16MB, it automatically uses the single-pass
+// memory path (PutFileAtomic) to eliminate two-pass disk I/O.
+func (c *Client) PutFileWithJumpRetry(ctx context.Context, localPath string, opts ...JumpOptions) (JumpResult, error) {
+	stat, err := os.Stat(localPath)
 	if err != nil {
 		return JumpResult{}, fmt.Errorf("bsos client: stat file %s: %w", localPath, err)
 	}
@@ -393,6 +427,22 @@ func (c *Client) PutFileWithJumpRetry(ctx context.Context, localPath string, opt
 	if size == 0 {
 		return JumpResult{}, fmt.Errorf("bsos client: empty file %s not allowed (total_size must be > 0)", localPath)
 	}
+
+	// Single-pass optimization for small/medium files <= 16MB
+	if size <= MaxAtomicPayloadSize {
+		return c.PutFileAtomic(ctx, localPath, opts...)
+	}
+
+	maxJumps := MaxJumpCode
+	if len(opts) > 0 && opts[0].MaxJumps > 0 {
+		maxJumps = min(opts[0].MaxJumps, MaxJumpCode)
+	}
+
+	f, err := os.Open(localPath)
+	if err != nil {
+		return JumpResult{}, fmt.Errorf("bsos client: open file %s: %w", localPath, err)
+	}
+	defer f.Close()
 
 	baseHasher := xxh3.New()
 	buf := make([]byte, c.chunkSize)
